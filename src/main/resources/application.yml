@@ -1,0 +1,98 @@
+spring.application.name: meta-whatsapp-cloud-sender
+server.port: 8080
+server.ssl.enabled: false
+
+# Enable virtual threads globally (Spring Boot 4.x)
+spring.threads.virtual.enabled: true
+
+# --- Custom Application Properties ---
+app:
+    whatsapp:
+        api-version: v22.0
+        base-url: ${META_WHATSAPP_BASE_URL:https://graph.facebook.com}
+        http-client:
+            connect-timeout-ms: 5000
+            request-timeout-ms: 30000
+    internal:
+        campaign-service:
+            url: ${CAMPAIGN_SERVICE_URL:http://localhost:8081}
+            access-token: ${CAMPAIGN_SERVICE_ACCESS_TOKEN:acess_token}
+            # example :: https://api.wa-campaigns.trusol.in/v1/campaign/16
+    kafka:
+        topics:
+            campaign-outbound-batch: ${CAMPAIGN_OUTBOUND_BATCH_TOPIC:dev.topic.campaign-outbound-messages-batch}
+            # Retryable failures (130429, 80007, 5xx) are stored in MongoDB outbox.
+            # Schedulers push ripe outbox documents to the retry topic.
+            whatsapp-failures-retry: ${WHATSAPP_FAILURES_RETRY_TOPIC:dev.topic.whatsapp-failures-retry}
+            whatsapp-failures-dlq: ${WHATSAPP_FAILURES_DLQ_TOPIC:dev.topic.whatsapp-failures-dlq}
+    retry:
+        max-attempts: 3
+        short-delay-seconds: 60
+    quota:
+        # TTL for cached campaign details in Redis (in minutes)
+        cache-ttl-minutes: ${QUOTA_CACHE_TTL_MINUTES:10}
+    delayed-retry:
+        # How often (in ms) the scheduler polls MongoDB for matured delayed retries
+        poll-interval-ms: ${DELAYED_RETRY_POLL_MS:60000}
+        # Batch size for each scheduler poll
+        batch-size: ${DELAYED_RETRY_BATCH_SIZE:100}
+
+# --- Redis Configuration ---
+spring.data.redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    username: ${REDIS_USERNAME:redis-user}
+    password: ${REDIS_PASSWORD:redis-password}
+    timeout: 5000ms
+
+# --- MongoDB Configuration ---
+spring.mongodb:
+    uri: ${MONGODB_URI:mongodb://localhost:27017/whatsapp_sender}
+
+# --- Kafka auto configuration properties ---
+spring:
+    kafka:
+        bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka.trusol.in:9093}
+        properties:
+            security.protocol: ${KAFKA_SECURITY_PROTOCOL:SASL_SSL}
+            sasl.mechanism: ${KAFKA_SASL_MECHANISM:SCRAM-SHA-256}
+            sasl.jaas.config: org.apache.kafka.common.security.scram.ScramLoginModule required username="${KAFKA_USERNAME}" password="${KAFKA_PASSWORD}";
+            # Crucial: Adjust based on how long a single message might take to process
+            max.poll.interval.ms: 300000
+        consumer:
+            # Pick any name for group you like. Kafka creates it automatically.
+            group-id: ${CAMPAIGN_OUTBOUND_MESSAGES_SERVICE_KAFKA_CONSUMER_GROUP_ID:dev.consumer.group.campaign-outbound-service}
+            key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+            value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+            # 'earliest' ensures you don't miss messages if the consumer is down
+            auto-offset-reset: earliest
+            # Disable auto-commit to ensure we only acknowledge after successful processing
+            enable-auto-commit: false
+            # Fetch size tuning: How many messages to pull in one 'poll'
+            max-poll-records: 10
+            properties:
+                max.poll.interval.ms: 90000000
+        listener:
+            # Manual acknowledgment mode
+            ack-mode: manual_immediate
+            # Concurrency: Number of threads per pod (e.g., if you have 3 partitions and 1 pod, set to 3)
+            concurrency: 3
+        producer:
+            # Keep these as String to pass the raw WhatsApp JSON untouched
+            key-serializer: org.apache.kafka.common.serialization.StringSerializer
+            value-serializer: org.apache.kafka.common.serialization.StringSerializer
+            acks: all # Wait for the leader and all replicas to acknowledge
+            retries: 3
+            properties:
+                # Crucial for Confluent Cloud: Prevents duplicate messages during network retries
+                enable.idempotence: true
+
+# Actuator Configuration
+management:
+    endpoints:
+        web:
+            exposure:
+                include: health,info,metrics,kafka
+    endpoint:
+        health:
+            show-details: always
