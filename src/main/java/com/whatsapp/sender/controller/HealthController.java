@@ -10,7 +10,6 @@ import java.util.Map;
 
 /**
  * Lightweight health endpoint for readiness probes and service discovery.
- * <p>
  * Supplements Spring Actuator with application-specific metadata.
  * Kubernetes/ECS readiness probes should target {@code /api/health}.
  */
@@ -27,7 +26,6 @@ public class HealthController {
                 "service", applicationName,
                 "status", "UP",
                 "timestamp", Instant.now().toString(),
-                "thread", Thread.currentThread().toString()
-        );
+                "thread", Thread.currentThread().toString());
     }
 }

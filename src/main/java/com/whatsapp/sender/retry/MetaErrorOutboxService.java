@@ -1,11 +1,5 @@
 package com.whatsapp.sender.retry;
 
-import com.whatsapp.sender.dao.MetaErrorOutboxDocument;
-import com.whatsapp.sender.dto.MessageStatusResultEvent;
-import com.whatsapp.sender.repository.MessageStateRepository;
-
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -19,7 +13,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ThreadLocalRandom;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+import com.whatsapp.sender.dao.MetaErrorOutboxDocument;
+import com.whatsapp.sender.repository.MessageStateRepository;
 
 /**
  * Service to handle the write-path (batch inserts) and read-path (row-level locking)
@@ -27,7 +26,7 @@ import java.util.concurrent.ThreadLocalRandom;
  * <p>
  * Supports three categories of retryable errors:
  * <ul>
- *   <li><strong>130429 (Burst/MPS Limit)</strong>: Exponential backoff with jitter (5s→60s cap)</li>
+ *   <li><strong>130429 (Burst/MPS Limit)</strong>: Exponential backoff (5s→60s cap)</li>
  *   <li><strong>80007 (Daily Quota Limit)</strong>: Strict 24-hour retry</li>
  *   <li><strong>5xx (Server Errors)</strong>: Short exponential backoff (60s, 120s, 300s cap)</li>
  * </ul>
@@ -45,20 +44,6 @@ public class MetaErrorOutboxService {
 
     private static final int BATCH_INSERT_SIZE = 1000;
 
-    /**
-     * Called by the BatchDispatcher or RetryWorkerListener to queue a failed message
-     * for delayed retry. This is non-blocking.
-     *
-     * @param campaignId         campaign identifier
-     * @param batchId            batch identifier
-     * @param wabaId             the WABA ID (for 80007 scope)
-     * @param wabaPhoneNumberId  the WaBa phone number ID (for 130429 scope)
-     * @param templateId         the template ID used
-     * @param targetPhoneNumbers the phone numbers that failed
-     * @param errorCode          the error code (e.g., "130429", "80007", "HTTP_500")
-     * @param errorMessage       the error detail
-     * @param retryCount         current retry count
-     */
     public void queueForRetry(
             Integer campaignId,
             Integer batchId,
@@ -90,8 +75,7 @@ public class MetaErrorOutboxService {
         );
 
         errorBuffer.add(doc);
-        log.debug("Queued {} targets for retry. Error: {}, RetryAfter: {}, RetryCount: {}",
-                targetPhoneNumbers.size(), errorCode, retryAfter, retryCount);
+        log.debug("Queued {} targets for retry. Error: {}, RetryAfter: {}, RetryCount: {}", targetPhoneNumbers.size(), errorCode, retryAfter, retryCount);
     }
 
     /**
@@ -99,7 +83,7 @@ public class MetaErrorOutboxService {
      * <p>
      * <ul>
      *   <li><strong>80007</strong>: Strict 24 hours (daily quota is a hard stop)</li>
-     *   <li><strong>130429</strong>: Exponential backoff with jitter (5s, 10s, 20s, 40s, 60s cap)</li>
+     *   <li><strong>130429</strong>: Exponential backoff (5s, 10s, 20s, 40s, 60s cap)</li>
      *   <li><strong>5xx / HTTP_5xx</strong>: Exponential backoff (60s, 120s, 300s cap)</li>
      *   <li><strong>Fallback</strong>: 60 seconds</li>
      * </ul>
@@ -111,13 +95,12 @@ public class MetaErrorOutboxService {
         }
 
         if ("130429".equals(errorCode)) {
-            // Burst Limit: Exponential backoff with jitter (5s, 10s, 20s, 40s, 60s cap)
+            // Burst Limit: Exponential backoff (5s, 10s, 20s, 40s, 60s cap)
             int baseDelaySeconds = 5 * (int) Math.pow(2, retryCount);
             if (baseDelaySeconds > 60) {
                 baseDelaySeconds = 60;
             }
-            int jitter = ThreadLocalRandom.current().nextInt(0, 3); // 0-2 seconds jitter
-            return Instant.now().plus(baseDelaySeconds + jitter, ChronoUnit.SECONDS);
+            return Instant.now().plus(baseDelaySeconds, ChronoUnit.SECONDS);
         }
 
         if (errorCode != null && errorCode.startsWith("HTTP_5")) {
@@ -176,8 +159,7 @@ public class MetaErrorOutboxService {
         String workerId = UUID.randomUUID().toString();
         Instant now = Instant.now();
 
-        Criteria criteria = Criteria.where("status").is("PENDING")
-                .and("retry_after").lte(now);
+        Criteria criteria = Criteria.where("status").is("PENDING").and("retry_after").lte(now);
 
         if (is5xx) {
             criteria = criteria.and("error_code").regex("^HTTP_5");
@@ -186,10 +168,7 @@ public class MetaErrorOutboxService {
         }
 
         Query lockQuery = new Query(criteria).limit(limit);
-
-        Update lockUpdate = new Update()
-                .set("status", "PROCESSING")
-                .set("worker_id", workerId);
+        Update lockUpdate = new Update().set("status", "PROCESSING").set("worker_id", workerId);
 
         // Perform atomic updateMany (row-level locking)
         mongoTemplate.updateMulti(lockQuery, lockUpdate, MetaErrorOutboxDocument.class);
@@ -204,31 +183,6 @@ public class MetaErrorOutboxService {
      * successfully pushed to the Kafka retry topic.
      */
     public void deleteFromOutbox(MetaErrorOutboxDocument doc) {
-        Query deleteQuery = new Query(Criteria.where("id").is(doc.id()));
-        mongoTemplate.remove(deleteQuery, MetaErrorOutboxDocument.class);
-    }
-
-    /**
-     * Marks a document as permanently failed when the Kafka push fails.
-     * Saves it to the terminal message_dispatch_log collection and removes from outbox.
-     */
-    public void markAsFailed(MetaErrorOutboxDocument doc) {
-        MessageStatusResultEvent terminalFailure = new MessageStatusResultEvent(
-                doc.batchId(),
-                doc.campaignId(),
-                doc.targetPhoneNumbers(),
-                false,
-                doc.errorCode(),
-                "Permanent Failure: Unable to push outbox retry to Kafka. Original error: " + doc.errorMessage(),
-                null,
-                doc.retryCount(),
-                Instant.now()
-        );
-
-        // Save to the terminal success/failure log
-        messageStateRepository.saveDispatchResult(terminalFailure, doc.wabaPhoneNumberId(), doc.templateId());
-
-        // Delete from active outbox table
         Query deleteQuery = new Query(Criteria.where("id").is(doc.id()));
         mongoTemplate.remove(deleteQuery, MetaErrorOutboxDocument.class);
     }

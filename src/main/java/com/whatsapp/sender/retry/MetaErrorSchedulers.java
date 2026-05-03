@@ -42,7 +42,7 @@ public class MetaErrorSchedulers {
     @Value("${app.kafka.topics.whatsapp-failures-retry:whatsapp-failures-retry}")
     private String retryTopic;
 
-    private static final int POLL_LIMIT = 500;
+    private static final int POLL_LIMIT = 100;
 
     /**
      * Fast Scheduler: Runs every 5 seconds.
@@ -76,45 +76,40 @@ public class MetaErrorSchedulers {
     /**
      * Common logic to fetch ripe messages with row-level locking, push to Kafka retry topic,
      * and delete them from the outbox.
-     *
-     * @param errorCodePattern the error code to match (exact or prefix)
-     * @param is5xx            if true, uses regex matching for HTTP_5xx codes
      */
     private void processRipeMessages(String errorCodePattern, boolean is5xx) {
         try {
-            // 1. Fetch & Lock (Atomic)
+            // Fetch & Lock (Atomic)
             List<MetaErrorOutboxDocument> ripeMessages = outboxService.fetchAndLockRipeMessages(errorCodePattern, is5xx, POLL_LIMIT);
-            
             if (ripeMessages == null || ripeMessages.isEmpty()) {
                 return;
             }
-
             log.info("Found {} ripe messages for error pattern [{}]", ripeMessages.size(), errorCodePattern);
 
-            // 2. Process each locked document
+            // Process each locked document
             for (MetaErrorOutboxDocument doc : ripeMessages) {
-                try {
-                    FailureEvent failureEvent = new FailureEvent(
-                            doc.campaignId(),
-                            doc.batchId(),
-                            doc.wabaId(),
-                            doc.wabaPhoneNumberId(),
-                            doc.templateId(),
-                            doc.targetPhoneNumbers(),
-                            doc.errorCode(),
-                            doc.errorMessage(),
-                            doc.retryCount(),
-                            Instant.now()
-                    );
+                FailureEvent failureEvent = new FailureEvent(
+                    doc.campaignId(),
+                    doc.batchId(),
+                    doc.wabaId(),
+                    doc.wabaPhoneNumberId(),
+                    doc.templateId(),
+                    doc.targetPhoneNumbers(),
+                    doc.errorCode(),
+                    doc.errorMessage(),
+                    doc.retryCount(),
+                    Instant.now()
+                );
 
+                try {
                     String payload = objectMapper.writeValueAsString(failureEvent);
 
-                    // 3. Push payload to retry-topic, then delete from outbox
+                    // Push payload to retry-topic, then delete from outbox
                     kafkaTemplate.send(retryTopic, String.valueOf(doc.campaignId()), payload)
                             .whenComplete((result, ex) -> {
                                 if (ex != null) {
                                     log.error("Failed to push doc [{}] to retry topic: {}", doc.id(), ex.getMessage());
-                                    outboxService.markAsFailed(doc);
+                                    // don't delete from outbox, let the scheduler retry
                                 } else {
                                     log.debug("Successfully pushed doc [{}] to retry topic. Deleting from outbox.", doc.id());
                                     outboxService.deleteFromOutbox(doc);
@@ -123,12 +118,12 @@ public class MetaErrorSchedulers {
 
                 } catch (Exception e) {
                     log.error("Error pushing outbox doc [{}] to Kafka: {}", doc.id(), e.getMessage(), e);
-                    outboxService.markAsFailed(doc);
+                    // don't delete from outbox, let the scheduler retry
                 }
             }
 
         } catch (Exception e) {
-            log.error("Exception in MetaErrorScheduler for pattern [{}]: {}", errorCodePattern, e.getMessage(), e);
+            log.error("Exception in MetaErrorScheduler for error-pattern [{}]: {}", errorCodePattern, e.getMessage(), e);
         }
     }
 }

@@ -21,5 +21,7 @@ public record OutboundBatchEvent(
 
         Integer campaignId,
         Integer batchId,
+        String wabaPhoneNumberId, // Nullable, if provided strictly, send message from this Waba. Else rotate Wabas.
+        String templateId, // Nullable, if provided strictly, send message with this Template. Else rotate Templates.
         List<String> targetPhoneNumbers
 ) {}

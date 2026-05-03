@@ -38,7 +38,7 @@ public record MessageDispatchDocument(
         @Field("target_phone_numbers")
         List<String> targetPhoneNumbers,
 
-        @Field("wa_mesg_id")
+        @Field("wa_message_id")
         String whatsappMessageId,
 
         @Field("is_send_successful")

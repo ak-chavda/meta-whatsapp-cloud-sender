@@ -41,12 +41,6 @@ public record WhatsAppTemplateRequest(
         String type,
         Template template) {
 
-    /**
-     * Convenience constructor that pre-fills the static Meta API fields.
-     *
-     * @param to       recipient phone number in E.164 format
-     * @param template template details with dynamic components
-     */
     public WhatsAppTemplateRequest(String to, Template template) {
         this("whatsapp", "individual", to, "template", template);
     }

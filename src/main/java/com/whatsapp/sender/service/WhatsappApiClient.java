@@ -17,6 +17,7 @@ import com.whatsapp.sender.dto.Campaign;
 import com.whatsapp.sender.dto.Campaign.TemplateDetail;
 import com.whatsapp.sender.dto.WhatsAppTemplateRequest;
 import com.whatsapp.sender.dto.WhatsAppTemplateRequest.Template;
+import com.whatsapp.sender.util.Utils;
 import com.whatsapp.sender.dto.WhatsappApiResponse;
 
 /**
@@ -172,12 +173,7 @@ public class WhatsappApiClient {
      * @return serialized JSON payload
      */
     private String buildTemplatePayload(String targetPhoneNumber, String templateId, Campaign campaign) throws Exception {
-
-        TemplateDetail templateDetail = campaign.templateDetails().stream()
-                .filter(t -> templateId.equals(t.templateId()))
-                .findFirst()
-                .get();
-
+        TemplateDetail templateDetail = Utils.findTemplateDetail(campaign, templateId);
         final Template template = new Template(templateDetail.name(), templateDetail.language(), templateDetail.components());
         final WhatsAppTemplateRequest requestPayload = new WhatsAppTemplateRequest(targetPhoneNumber, template);
         return objectMapper.writeValueAsString(requestPayload);

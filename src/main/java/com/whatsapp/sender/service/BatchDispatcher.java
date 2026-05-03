@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import com.whatsapp.sender.dto.Campaign;
 import com.whatsapp.sender.dto.FailureEvent;
+import com.whatsapp.sender.dto.FailureStatus;
 import com.whatsapp.sender.dto.MessageStatusResultEvent;
 import com.whatsapp.sender.dto.OutboundBatchEvent;
 import com.whatsapp.sender.dto.QuotaCheckResult;
@@ -69,19 +70,19 @@ public class BatchDispatcher {
         Campaign campaign = campaignService.getCampaignDetail(campaignId);
         if (campaign == null) {
             log.error("Campaign detail retrieval failed for campaign [{}]. Marking all {} targets as FAILED.", campaignId, targetPhoneNumbers.size());
-            handleBatchLevelFailure(batchEvent, "CAMPAIGN_DETAIL_RETRIEVAL_FAILED", "Campaign details not found");
+            handleBatchLevelFailure(batchEvent, FailureStatus.CAMPAIGN_DETAIL_RETRIEVAL_FAILED.name(), "Campaign details not found");
             return;
         }
         
-        if (campaign.templateDetails() == null || campaign.templateDetails().isEmpty()) {
+        if (campaign.templates() == null || campaign.templates().isEmpty()) {
             log.error("No template configured for campaign [{}]. Marking all targets as FAILED.", campaignId);
-            handleBatchLevelFailure(batchEvent, "NO_TEMPLATE_CONFIGURED", "No template found in campaign configuration");
+            handleBatchLevelFailure(batchEvent, FailureStatus.NO_TEMPLATE_CONFIGURED.name(), "No template found in campaign configuration");
             return;
         }
 
-        if (campaign.whatsappBusinessAccountDetails() == null || campaign.whatsappBusinessAccountDetails().isEmpty()) {
+        if (campaign.wabaNumbers() == null || campaign.wabaNumbers().isEmpty()) {
             log.error("No WaBa phone number configured for campaign [{}]. Marking all targets as FAILED.", campaignId);
-            handleBatchLevelFailure(batchEvent, "NO_WABA_CONFIGURED", "No WaBa phone number found in campaign configuration");
+            handleBatchLevelFailure(batchEvent, FailureStatus.NO_WABA_CONFIGURED.name(), "No WaBa phone number found in campaign configuration");
             return;
         }
 
@@ -121,13 +122,12 @@ public class BatchDispatcher {
         QuotaCheckResult quotaResult = quotaManager.resolveCombination(campaign);
 
         if (!quotaResult.allowed()) {
-            log.warn("Quota exhausted for target [{}]. Type: {}, Reason: {}", targetPhoneNumber, quotaResult.exhaustionType(), quotaResult.reason());
-            MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, "QUOTA_EXHAUSTED", quotaResult.reason(), null, 0);
+            log.warn("Quota exhausted. Type: {}, Reason: {}", quotaResult.exhaustionType(), quotaResult.reason());
+            MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, quotaResult.exhaustionType().name(), quotaResult.reason(), null, 0);
             messageStateRepository.saveDispatchResult(failedEvent, null, null);
             return failedEvent;
         }
 
-        final String resolvedWabaId = quotaResult.wabaId();
         final String resolvedWabaPhoneNumberId = quotaResult.wabaPhoneNumberId();
         final String resolvedTemplateId = quotaResult.templateId();
 
@@ -135,7 +135,7 @@ public class BatchDispatcher {
         String accessToken = campaignClient.fetchTokenForWhatsappAccount(resolvedWabaPhoneNumberId);
         if (accessToken == null || accessToken.isEmpty()) {
             log.error("Access token retrieval failed for WaBa [{}]. Saving as permanent failure.", resolvedWabaPhoneNumberId);
-            MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, "TOKEN_RETRIEVAL_FAILED", "Access token not found for WaBa: " + resolvedWabaPhoneNumberId, null, 0);
+            MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, FailureStatus.TOKEN_RETRIEVAL_FAILED.name(), "Access token not found for WaBa: " + resolvedWabaPhoneNumberId, null, 0);
             messageStateRepository.saveDispatchResult(failedEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
             return failedEvent;
         }
@@ -146,8 +146,7 @@ public class BatchDispatcher {
         // ── Handle Success ─────────────────────────────────────────────────
         if (sendResult.success()) {
             // QuotaManager handles ALL: increment counters + check limits + open circuits
-            quotaManager.recordSuccessAndCheckLimits(campaign, batchEvent.campaignId(), resolvedWabaPhoneNumberId, resolvedWabaId, resolvedTemplateId);
-            
+            quotaManager.recordSuccessAndCheckLimits(campaign, batchEvent.campaignId().toString(), campaign.wabaId(), resolvedTemplateId);
             MessageStatusResultEvent successEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), true, null, null, sendResult.whatsappMessageId(), 0);
             messageStateRepository.saveDispatchResult(successEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
             return successEvent;
@@ -158,13 +157,13 @@ public class BatchDispatcher {
             String errorCode = resolveErrorCode(sendResult);
 
             // QuotaManager handles circuit breaker opening
-            quotaManager.handleRetryableError(errorCode, resolvedWabaId, resolvedWabaPhoneNumberId, sendResult.retryAfterSeconds());
+            quotaManager.handleRetryableError(errorCode, campaign.wabaId(), resolvedWabaPhoneNumberId);
 
             // Queue to MetaErrorOutbox for scheduled retry
             metaErrorOutboxService.queueForRetry(
                     batchEvent.campaignId(),
                     batchEvent.batchId(),
-                    resolvedWabaId,
+                    campaign.wabaId(),
                     resolvedWabaPhoneNumberId,
                     resolvedTemplateId,
                     List.of(targetPhoneNumber),
@@ -184,7 +183,7 @@ public class BatchDispatcher {
         FailureEvent dlqEvent = new FailureEvent(
                 batchEvent.campaignId(),
                 batchEvent.batchId(),
-                resolvedWabaId,
+                campaign.wabaId(),
                 resolvedWabaPhoneNumberId,
                 resolvedTemplateId,
                 List.of(targetPhoneNumber),
@@ -208,6 +207,7 @@ public class BatchDispatcher {
         }
         String errorCode = sendResult.errorCode();
         if (errorCode != null) {
+            // TODO :: need to confirm aobut the META error code constants | Will this exact string is returned from meta ? 
             return errorCode.equals("META_130429") || errorCode.equals("META_80007");
         }
         return false;
@@ -234,7 +234,7 @@ public class BatchDispatcher {
     }
 
     /**
-     * Creates a per-target status result event (internal tracking only, not published to Kafka).
+     * Creates a per-targetNumber status result event (internal tracking only, not published to Kafka).
      */
     private MessageStatusResultEvent createStatusEvent(OutboundBatchEvent batch, List<String> targetPhoneNumbers, boolean isSendSuccessful, String errorCode, String errorMessage, String whatsappMessageId, int retryCount) {
         return new MessageStatusResultEvent(

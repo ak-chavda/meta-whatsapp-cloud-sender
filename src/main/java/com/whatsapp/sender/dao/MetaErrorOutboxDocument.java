@@ -15,7 +15,7 @@ import java.util.List;
  * Supports all retryable error types:
  * <ul>
  *   <li><strong>130429 (Burst/MPS Limit)</strong>: Per Phone Number ID,
- *       exponential backoff with jitter (seconds).</li>
+ *       exponential backoff (seconds).</li>
  *   <li><strong>80007 (Daily Quota Limit)</strong>: Per WABA (all phone numbers
  *       share the pool), strict 24-hour retry.</li>
  *   <li><strong>5xx (Server Errors)</strong>: Transient server errors,
