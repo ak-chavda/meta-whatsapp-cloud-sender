@@ -1,4 +1,4 @@
-package com.whatsapp.sender.dto;
+package com.whatsapp.sender.dao;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.CompoundIndex;

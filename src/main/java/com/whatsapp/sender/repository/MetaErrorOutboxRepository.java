@@ -1,7 +1,9 @@
-package com.whatsapp.sender.retry;
+package com.whatsapp.sender.repository;
 
 import org.springframework.data.mongodb.repository.MongoRepository;
 import org.springframework.stereotype.Repository;
+
+import com.whatsapp.sender.dao.MetaErrorOutboxDocument;
 
 /**
  * Spring Data MongoDB repository for MetaErrorOutboxDocument.

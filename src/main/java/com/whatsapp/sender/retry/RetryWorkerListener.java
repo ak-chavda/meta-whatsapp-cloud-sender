@@ -4,10 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.whatsapp.sender.dto.Campaign;
 import com.whatsapp.sender.dto.FailureEvent;
 import com.whatsapp.sender.dto.MessageStatusResultEvent;
+import com.whatsapp.sender.repository.MessageStateRepository;
 import com.whatsapp.sender.service.CampaignClient;
 import com.whatsapp.sender.service.CampaignService;
-import com.whatsapp.sender.service.CircuitBreaker;
-import com.whatsapp.sender.service.MessageStateRepository;
 import com.whatsapp.sender.service.QuotaManager;
 import com.whatsapp.sender.service.WhatsappApiClient;
 import lombok.RequiredArgsConstructor;
@@ -37,12 +36,16 @@ import java.util.concurrent.ExecutorService;
  *   <li><strong>Fetch access token</strong> from the external Campaign Service.</li>
  *   <li><strong>Re-execute the WhatsApp API call</strong> for each target phone number
  *       using Virtual Threads.</li>
- *   <li><strong>On success</strong>: Save to {@code MessageDispatchDocument} (MongoDB).</li>
- *   <li><strong>On retryable failure</strong>: Queue back to {@code MetaErrorOutboxDocument}
- *       with incremented retry count for the next scheduler cycle.</li>
+ *   <li><strong>On success</strong>: {@link QuotaManager#recordSuccessAndCheckLimits}
+ *       handles quota increment + circuit check. Save to MongoDB.</li>
+ *   <li><strong>On retryable failure</strong>: {@link QuotaManager#handleRetryableError}
+ *       handles circuit opening. Queue back to outbox.</li>
  *   <li><strong>On non-retryable failure</strong>: Save to {@code MessageDispatchDocument}
  *       as permanent failure + DLQ.</li>
  * </ol>
+ * <p>
+ * All quota/circuit operations are delegated to {@link QuotaManager}.
+ * This class does NOT directly call CircuitBreaker.
  */
 @Slf4j
 @Component
@@ -53,7 +56,6 @@ public class RetryWorkerListener {
     private final WhatsappApiClient whatsappApiClient;
     private final CampaignService campaignService;
     private final CampaignClient campaignClient;
-    private final CircuitBreaker circuitBreaker;
     private final QuotaManager quotaManager;
     private final MetaErrorOutboxService metaErrorOutboxService;
     private final MessageStateRepository messageStateRepository;
@@ -128,7 +130,7 @@ public class RetryWorkerListener {
 
             List<CompletableFuture<Void>> futures = failureEvent.targetPhoneNumbers().stream()
                     .map(targetPhone -> CompletableFuture.runAsync(() ->
-                            retryTarget(failureEvent, targetPhone, wabaId, wabaPhoneNumberId, templateId, accessToken, campaign, nextRetryCount),
+                            retryTarget(failureEvent, campaign, targetPhone, wabaId, wabaPhoneNumberId, templateId, accessToken, nextRetryCount),
                             virtualThreadExecutor))
                     .toList();
 
@@ -148,21 +150,18 @@ public class RetryWorkerListener {
     }
 
     /**
-     * Retries a single target phone number. Re-executes the HTTP call and routes the result:
-     * <ul>
-     *   <li>Success → save to {@code MessageDispatchDocument}</li>
-     *   <li>Retryable failure → queue back to {@code MetaErrorOutboxDocument}</li>
-     *   <li>Non-retryable failure → save as permanent failure to {@code MessageDispatchDocument}</li>
-     * </ul>
+     * Retries a single target phone number. Re-executes the HTTP call and routes the result.
+     * <p>
+     * All quota/circuit operations delegated to {@link QuotaManager}.
      */
     private void retryTarget(
             FailureEvent failureEvent,
+            Campaign campaign,
             String targetPhone,
             String wabaId,
             String wabaPhoneNumberId,
             String templateId,
             String accessToken,
-            Campaign campaign,
             int nextRetryCount
     ) {
         try {
@@ -170,9 +169,8 @@ public class RetryWorkerListener {
                     wabaPhoneNumberId, templateId, accessToken, targetPhone, campaign);
 
             if (sendResult.success()) {
-                // ── Success: persist to MessageDispatchDocument ─────────────
-                quotaManager.incrementSuccessCounter(failureEvent.campaignId(), wabaPhoneNumberId);
-                quotaManager.incrementQuota(wabaPhoneNumberId, templateId);
+                // ── Success: QuotaManager handles increment + circuit check ──
+                quotaManager.recordSuccessAndCheckLimits(campaign, failureEvent.campaignId(), wabaPhoneNumberId, wabaId, templateId);
 
                 MessageStatusResultEvent successEvent = new MessageStatusResultEvent(
                         failureEvent.batchId(),
@@ -189,11 +187,9 @@ public class RetryWorkerListener {
                 log.debug("Retry succeeded for phone [{}], campaign [{}].", targetPhone, failureEvent.campaignId());
 
             } else if (isRetryable(sendResult)) {
-                // ── Retryable failure: queue back to outbox ────────────────
+                // ── Retryable failure: QuotaManager handles circuit opening ──
                 String errorCode = resolveErrorCode(sendResult);
-
-                // Open appropriate circuit breaker
-                openCircuitForError(errorCode, wabaId, wabaPhoneNumberId, sendResult);
+                quotaManager.handleRetryableError(errorCode, wabaId, wabaPhoneNumberId, sendResult.retryAfterSeconds());
 
                 metaErrorOutboxService.queueForRetry(
                         failureEvent.campaignId(),
@@ -249,11 +245,9 @@ public class RetryWorkerListener {
      * Determines if a send result is retryable.
      */
     private boolean isRetryable(WhatsappApiClient.SendResult sendResult) {
-        // 429 or 5xx are retryable
         if (sendResult.httpStatusCode() == 429 || sendResult.httpStatusCode() >= 500) {
             return true;
         }
-        // Meta API error codes 130429 (burst) and 80007 (daily quota)
         String errorCode = sendResult.errorCode();
         if (errorCode != null) {
             return errorCode.equals("META_130429") || errorCode.equals("META_80007");
@@ -267,24 +261,9 @@ public class RetryWorkerListener {
     private String resolveErrorCode(WhatsappApiClient.SendResult sendResult) {
         String errorCode = sendResult.errorCode();
         if (errorCode != null && errorCode.startsWith("META_")) {
-            return errorCode.substring(5); // "META_130429" → "130429"
+            return errorCode.substring(5);
         }
-        return errorCode; // "HTTP_500" stays as-is
-    }
-
-    /**
-     * Opens the appropriate circuit breaker based on error code.
-     */
-    private void openCircuitForError(String errorCode, String wabaId, String wabaPhoneNumberId, WhatsappApiClient.SendResult sendResult) {
-        if ("130429".equals(errorCode)) {
-            // Burst/MPS Limit: scope is per Phone Number ID
-            long retryAfter = sendResult.retryAfterSeconds() != null ? sendResult.retryAfterSeconds() : 60L;
-            circuitBreaker.openBurstLimitCircuit(wabaPhoneNumberId, retryAfter);
-        } else if ("80007".equals(errorCode)) {
-            // Daily Quota: scope is per WABA (all phone numbers share this pool)
-            circuitBreaker.openDailyQuotaCircuit(wabaId);
-        }
-        // 5xx: no circuit breaker needed (transient, handled by retry delay)
+        return errorCode;
     }
 
     /**

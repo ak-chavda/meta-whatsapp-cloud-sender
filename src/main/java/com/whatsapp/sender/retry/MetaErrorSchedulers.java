@@ -1,6 +1,7 @@
 package com.whatsapp.sender.retry;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.whatsapp.sender.dao.MetaErrorOutboxDocument;
 import com.whatsapp.sender.dto.FailureEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

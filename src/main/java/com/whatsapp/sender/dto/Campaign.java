@@ -5,7 +5,7 @@ import java.util.List;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 public record Campaign(
-        String id,
+        Integer id,
         String name,
         @JsonProperty("whatsapp_business_account_details") List<WhatsAppBusinessAccountDetail> whatsappBusinessAccountDetails,
         @JsonProperty("template_details") List<TemplateDetail> templateDetails) {
@@ -19,6 +19,7 @@ public record Campaign(
     public record TemplateDetail(
             @JsonProperty("template_id") String templateId,
             @JsonProperty("daily_sending_limit") int dailySendingLimit,
+            @JsonProperty("sending_limit_reset_in_seconds") long sendingLimitResetInSeconds,
 
             String name,
             Language language,

@@ -1,7 +1,9 @@
 package com.whatsapp.sender.retry;
 
+import com.whatsapp.sender.dao.MetaErrorOutboxDocument;
 import com.whatsapp.sender.dto.MessageStatusResultEvent;
-import com.whatsapp.sender.service.MessageStateRepository;
+import com.whatsapp.sender.repository.MessageStateRepository;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.mongodb.core.MongoTemplate;

@@ -28,18 +28,53 @@ import java.time.Duration;
 public class CircuitBreaker {
 
     /** Per Phone Number ID — burst/MPS limit (130429). */
-    public static final String WABA_RATE_LIMIT_PREFIX = "circuit:waba:rate-limit:";
+    private static final String WABA_RATE_LIMIT_PREFIX = "circuit:waba:rate-limit:";
 
     /** Per WABA ID — daily quota limit (80007). All phone numbers share this pool. */
-    public static final String WABA_DAILY_QUOTA_PREFIX = "circuit:waba:daily-quota:";
+    private static final String WABA_DAILY_QUOTA_PREFIX = "circuit:waba:daily-quota:";
 
-    /** Per Campaign — all WABAs exhausted. */
-    public static final String CAMPAIGN_WABAS_EXHAUSTED_PREFIX = "circuit:campaign:wabas:exhausted:";
-
-    /** Per Campaign — all templates exhausted. */
-    public static final String CAMPAIGN_TEMPLATES_EXHAUSTED_PREFIX = "circuit:campaign:templates:exhausted:";
+    /** Per Campaign — any template exhausted. */
+    private static final String CAMPAIGN_TEMPLATE_EXHAUSTED_PREFIX = "circuit:campaign:template:exhausted:";
 
     private final StringRedisTemplate redisTemplate;
+
+    public boolean isTemplateCircuitOpen(String campaignId, String templateId) {
+        return isCircuitOpen(CAMPAIGN_TEMPLATE_EXHAUSTED_PREFIX, campaignId + ":" + templateId);
+    }
+
+    public void openTemplateCircuit(String campaignId, String templateId, long retryAfterSeconds) {
+        openCircuit(CAMPAIGN_TEMPLATE_EXHAUSTED_PREFIX, campaignId + ":" + templateId, retryAfterSeconds);
+    }
+
+    /**
+     * Checks if the daily quota circuit is open for a WABA.
+     */
+    public boolean isDailyQuotaCircuitOpen(String wabaId) {
+        return isCircuitOpen(WABA_DAILY_QUOTA_PREFIX, wabaId);
+    }
+
+    /**
+     * Opens the WABA daily quota circuit (80007 scope).
+     * When any phone number under a WABA hits error code 80007,
+     * this blocks ALL phone numbers under that WABA for 24 hours.
+     */
+    public void openDailyQuotaCircuit(String wabaId) {
+        openCircuit(WABA_DAILY_QUOTA_PREFIX, wabaId, 86400L); // 24 hours
+    }
+
+    /**
+     * Checks if the burst/MPS circuit (130429 scope) for a specific waba-phone-number-id.
+     */
+    public boolean isBurstLimitCircuitOpen(String wabaPhoneNumberId) {
+        return isCircuitOpen(WABA_RATE_LIMIT_PREFIX, wabaPhoneNumberId);
+    }
+
+    /**
+     * Opens the burst/MPS circuit (130429 scope) for a specific waba-phone-number-id.
+     */
+    public void openBurstLimitCircuit(String wabaPhoneNumberId, long retryAfterSeconds) {
+        openCircuit(WABA_RATE_LIMIT_PREFIX, wabaPhoneNumberId, retryAfterSeconds);
+    }
 
     /**
      * Checks if the circuit is open (rate limited) for the given key.
@@ -47,7 +82,7 @@ public class CircuitBreaker {
      * Uses {@code hasKey()} to check key existence. When the TTL expires,
      * the key is auto-deleted by Redis, which effectively closes the circuit.
      */
-    public boolean isCircuitOpen(String prefix, String id) {
+    private boolean isCircuitOpen(String prefix, String id) {
         final String key = prefix + id;
         try {
             return Boolean.TRUE.equals(redisTemplate.hasKey(key));
@@ -60,7 +95,7 @@ public class CircuitBreaker {
     /**
      * Opens the circuit for a specific key for a given duration.
      */
-    public void openCircuit(String prefix, String id, long keepCircuitOpenForSeconds) {
+    private void openCircuit(String prefix, String id, long keepCircuitOpenForSeconds) {
         final String key = prefix + id;
         try {
             redisTemplate.opsForValue().set(key, "OPEN", Duration.ofSeconds(keepCircuitOpenForSeconds));
@@ -68,34 +103,5 @@ public class CircuitBreaker {
         } catch (Exception ex) {
             log.error("Failed to open circuit breaker for key : [{}]. | Exception occurred: {}", key, ex.getMessage());
         }
-    }
-
-    /**
-     * Opens the WABA daily quota circuit (80007 scope).
-     * <p>
-     * When any phone number under a WABA hits error code 80007,
-     * this blocks ALL phone numbers under that WABA for 24 hours.
-     *
-     * @param wabaId the WABA ID (not the phone number ID)
-     */
-    public void openDailyQuotaCircuit(String wabaId) {
-        openCircuit(WABA_DAILY_QUOTA_PREFIX, wabaId, 86400L); // 24 hours
-    }
-
-    /**
-     * Opens the burst/MPS circuit (130429 scope) for a specific phone number.
-     *
-     * @param phoneNumberId     the WaBa phone number ID
-     * @param retryAfterSeconds the Retry-After duration from the API response
-     */
-    public void openBurstLimitCircuit(String phoneNumberId, long retryAfterSeconds) {
-        openCircuit(WABA_RATE_LIMIT_PREFIX, phoneNumberId, retryAfterSeconds);
-    }
-
-    /**
-     * Checks if the daily quota circuit is open for a WABA.
-     */
-    public boolean isDailyQuotaCircuitOpen(String wabaId) {
-        return isCircuitOpen(WABA_DAILY_QUOTA_PREFIX, wabaId);
     }
 }

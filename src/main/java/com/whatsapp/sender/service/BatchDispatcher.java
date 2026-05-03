@@ -15,10 +15,9 @@ import com.whatsapp.sender.dto.FailureEvent;
 import com.whatsapp.sender.dto.MessageStatusResultEvent;
 import com.whatsapp.sender.dto.OutboundBatchEvent;
 import com.whatsapp.sender.dto.QuotaCheckResult;
+import com.whatsapp.sender.repository.MessageStateRepository;
 import com.whatsapp.sender.retry.DlqService;
 import com.whatsapp.sender.retry.MetaErrorOutboxService;
-
-import static com.whatsapp.sender.service.CircuitBreaker.WABA_RATE_LIMIT_PREFIX;
 
 /**
  * Fans out WhatsApp HTTP calls across Virtual Threads for a consumed batch.
@@ -26,17 +25,16 @@ import static com.whatsapp.sender.service.CircuitBreaker.WABA_RATE_LIMIT_PREFIX;
  * For a batch of N target phone numbers, this dispatcher:
  * <ol>
  *   <li>Resolves campaign details from the Redis cache layer (quotas, template IDs).</li>
- *   <li>Resolves the first available templateId from the campaign's template quota config.</li>
- *   <li>For each target, performs a distributed quota check with WaBa rotation.</li>
+ *   <li>Delegates quota + circuit breaker checks to {@link QuotaManager} which
+ *       follows the sequence: Template → Daily Quota (80007) → Burst/MPS (130429).</li>
  *   <li>Fetches the access token from the external service API (never cached).</li>
  *   <li>Submits N {@link CompletableFuture} tasks to the virtual thread executor,
  *       each executing a blocking HTTP call to the WhatsApp Cloud API.</li>
  *   <li>Waits for ALL N futures to complete using {@link CompletableFuture#allOf}.</li>
- *   <li>On success: persists to {@code MessageDispatchDocument} (MongoDB).</li>
- *   <li>On retryable failure (130429, 80007, 5xx): queues to
- *       {@code MetaErrorOutboxDocument} (MongoDB) for scheduled retry.</li>
- *   <li>On non-retryable failure (4xx, etc.): persists to
- *       {@code MessageDispatchDocument} as permanent failure + DLQ.</li>
+ *   <li>On success: {@link QuotaManager#recordSuccessAndCheckLimits} handles
+ *       quota increment + circuit breaker opening in one call.</li>
+ *   <li>On retryable failure: queues to {@code MetaErrorOutboxDocument}.</li>
+ *   <li>On non-retryable failure: persists to {@code MessageDispatchDocument} + DLQ.</li>
  * </ol>
  * <p>
  * No failure events are published directly to Kafka. The MetaErrorSchedulers
@@ -52,7 +50,6 @@ public class BatchDispatcher {
     private final CampaignService campaignService;
     private final CampaignClient campaignClient;
     private final QuotaManager quotaManager;
-    private final CircuitBreaker circuitBreaker;
     private final MessageStateRepository messageStateRepository;
     private final MetaErrorOutboxService metaErrorOutboxService;
     private final DlqService dlqService;
@@ -111,34 +108,28 @@ public class BatchDispatcher {
     }
 
     /**
-     * Processes a single target phone number: quota check → circuit breaker → HTTP call → result routing.
+     * Processes a single target phone number.
      * <p>
-     * Result routing:
-     * <ul>
-     *   <li>Success → {@code MessageDispatchDocument} (MongoDB)</li>
-     *   <li>Retryable failure → {@code MetaErrorOutboxDocument} (MongoDB outbox)</li>
-     *   <li>Non-retryable failure → {@code MessageDispatchDocument} (MongoDB) + DLQ</li>
-     * </ul>
+     * Sequence: QuotaManager.resolveCombination() → fetch token → HTTP call → route result.
+     * <p>
+     * All quota incrementing and circuit breaker operations are delegated to
+     * {@link QuotaManager} — this class does NOT directly call {@link CircuitBreaker}.
      */
     private MessageStatusResultEvent processTarget(OutboundBatchEvent batchEvent, String targetPhoneNumber, Campaign campaign) {
 
-        // ── Quota Check with Rotation ──────────────────────────────────────
+        // ── Quota + Circuit Breaker Check (Template → 80007 → 130429) ──────
         QuotaCheckResult quotaResult = quotaManager.resolveCombination(campaign);
 
         if (!quotaResult.allowed()) {
-            log.warn("Quota exhausted or circuit open for target [{}]. Reason: {}", targetPhoneNumber, quotaResult.reason());
+            log.warn("Quota exhausted for target [{}]. Type: {}, Reason: {}", targetPhoneNumber, quotaResult.exhaustionType(), quotaResult.reason());
             MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, "QUOTA_EXHAUSTED", quotaResult.reason(), null, 0);
-            // Quota exhaustion is non-retryable at this level — the campaign-level circuit handles it
             messageStateRepository.saveDispatchResult(failedEvent, null, null);
             return failedEvent;
         }
 
-        // ── Use rotated WaBa-phone-number-ID & template-id for API call ───────────
+        final String resolvedWabaId = quotaResult.wabaId();
         final String resolvedWabaPhoneNumberId = quotaResult.wabaPhoneNumberId();
         final String resolvedTemplateId = quotaResult.templateId();
-
-        // Resolve WABA ID from campaign details for circuit breaker scoping
-        final String resolvedWabaId = resolveWabaId(campaign, resolvedWabaPhoneNumberId);
 
         // ── Fetch access token from external service API (never cached) ────
         String accessToken = campaignClient.fetchTokenForWhatsappAccount(resolvedWabaPhoneNumberId);
@@ -154,8 +145,8 @@ public class BatchDispatcher {
 
         // ── Handle Success ─────────────────────────────────────────────────
         if (sendResult.success()) {
-            quotaManager.incrementSuccessCounter(batchEvent.campaignId(), resolvedWabaPhoneNumberId);
-            quotaManager.incrementQuota(resolvedWabaPhoneNumberId, resolvedTemplateId);
+            // QuotaManager handles ALL: increment counters + check limits + open circuits
+            quotaManager.recordSuccessAndCheckLimits(campaign, batchEvent.campaignId(), resolvedWabaPhoneNumberId, resolvedWabaId, resolvedTemplateId);
             
             MessageStatusResultEvent successEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), true, null, null, sendResult.whatsappMessageId(), 0);
             messageStateRepository.saveDispatchResult(successEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
@@ -166,8 +157,8 @@ public class BatchDispatcher {
         if (isRetryable(sendResult)) {
             String errorCode = resolveErrorCode(sendResult);
 
-            // Open appropriate circuit breaker
-            openCircuitForError(errorCode, resolvedWabaId, resolvedWabaPhoneNumberId, sendResult);
+            // QuotaManager handles circuit breaker opening
+            quotaManager.handleRetryableError(errorCode, resolvedWabaId, resolvedWabaPhoneNumberId, sendResult.retryAfterSeconds());
 
             // Queue to MetaErrorOutbox for scheduled retry
             metaErrorOutboxService.queueForRetry(
@@ -209,7 +200,6 @@ public class BatchDispatcher {
 
     /**
      * Determines if a send result is retryable.
-     * <p>
      * Retryable: 429, 5xx, META_130429 (burst/MPS), META_80007 (daily quota).
      */
     private boolean isRetryable(WhatsappApiClient.SendResult sendResult) {
@@ -236,45 +226,7 @@ public class BatchDispatcher {
     }
 
     /**
-     * Opens the appropriate circuit breaker based on error code.
-     * <ul>
-     *   <li><strong>130429</strong>: per Phone Number ID (burst/MPS limit)</li>
-     *   <li><strong>80007</strong>: per WABA ID (daily quota — all phone numbers share this pool)</li>
-     *   <li><strong>429 HTTP</strong>: per Phone Number ID</li>
-     * </ul>
-     */
-    private void openCircuitForError(String errorCode, String wabaId, String wabaPhoneNumberId, WhatsappApiClient.SendResult sendResult) {
-        if ("130429".equals(errorCode) || sendResult.httpStatusCode() == 429) {
-            long retryAfter = sendResult.retryAfterSeconds() != null ? sendResult.retryAfterSeconds() : 60L;
-            circuitBreaker.openBurstLimitCircuit(wabaPhoneNumberId, retryAfter);
-        } else if ("80007".equals(errorCode)) {
-            circuitBreaker.openDailyQuotaCircuit(wabaId);
-        }
-        // 5xx: no persistent circuit breaker (transient, handled by outbox retry delay)
-    }
-
-    /**
-     * Resolves the WABA ID from campaign details for a given phone number ID.
-     * <p>
-     * The WABA ID is needed for 80007 circuit breaker scoping — all phone
-     * numbers under a WABA share the same daily quota.
-     */
-    private String resolveWabaId(Campaign campaign, String wabaPhoneNumberId) {
-        if (campaign.whatsappBusinessAccountDetails() != null) {
-            for (Campaign.WhatsAppBusinessAccountDetail detail : campaign.whatsappBusinessAccountDetails()) {
-                if (wabaPhoneNumberId.equals(detail.waBaPhoneNumberId())) {
-                    return detail.waBaId();
-                }
-            }
-        }
-        // Fallback: use the phone number ID as WABA ID
-        log.warn("Could not resolve WABA ID for phone number [{}]. Using phone number as fallback.", wabaPhoneNumberId);
-        return wabaPhoneNumberId;
-    }
-
-    /**
      * Handles batch-level failures (e.g., campaign detail retrieval failure).
-     * Persists to MongoDB as permanent failure.
      */
     private void handleBatchLevelFailure(OutboundBatchEvent batch, String errorCode, String errorMessage) {
         MessageStatusResultEvent failedEvent = createStatusEvent(batch, batch.targetPhoneNumbers(), false, errorCode, errorMessage, null, 0);

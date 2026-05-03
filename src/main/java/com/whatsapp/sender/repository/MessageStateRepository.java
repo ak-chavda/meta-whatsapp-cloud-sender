@@ -1,6 +1,6 @@
-package com.whatsapp.sender.service;
+package com.whatsapp.sender.repository;
 
-import com.whatsapp.sender.dto.MessageDispatchDocument;
+import com.whatsapp.sender.dao.MessageDispatchDocument;
 import com.whatsapp.sender.dto.MessageStatusResultEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
