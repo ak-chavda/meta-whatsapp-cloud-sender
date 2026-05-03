@@ -165,12 +165,11 @@ public class RetryWorkerListener {
             int nextRetryCount
     ) {
         try {
-            WhatsappApiClient.SendResult sendResult = whatsappApiClient.sendMessage(
-                    wabaPhoneNumberId, templateId, accessToken, targetPhone, campaign);
+            WhatsappApiClient.SendResult sendResult = whatsappApiClient.sendMessage(wabaPhoneNumberId, templateId, accessToken, targetPhone, campaign);
 
             if (sendResult.success()) {
                 // ── Success: QuotaManager handles increment + circuit check ──
-                quotaManager.recordSuccessAndCheckLimits(campaign, failureEvent.campaignId(), wabaPhoneNumberId, wabaId, templateId);
+                quotaManager.recordSuccessAndCheckLimits(campaign, failureEvent.campaignId().toString(), wabaId, templateId);
 
                 MessageStatusResultEvent successEvent = new MessageStatusResultEvent(
                         failureEvent.batchId(),
@@ -189,7 +188,7 @@ public class RetryWorkerListener {
             } else if (isRetryable(sendResult)) {
                 // ── Retryable failure: QuotaManager handles circuit opening ──
                 String errorCode = resolveErrorCode(sendResult);
-                quotaManager.handleRetryableError(errorCode, wabaId, wabaPhoneNumberId, sendResult.retryAfterSeconds());
+                quotaManager.handleRetryableError(errorCode, wabaId, wabaPhoneNumberId);
 
                 metaErrorOutboxService.queueForRetry(
                         failureEvent.campaignId(),

@@ -73,13 +73,13 @@ public class BatchDispatcher {
             return;
         }
         
-        if (campaign.templateDetails() == null || campaign.templateDetails().isEmpty()) {
+        if (campaign.templates() == null || campaign.templates().isEmpty()) {
             log.error("No template configured for campaign [{}]. Marking all targets as FAILED.", campaignId);
             handleBatchLevelFailure(batchEvent, "NO_TEMPLATE_CONFIGURED", "No template found in campaign configuration");
             return;
         }
 
-        if (campaign.whatsappBusinessAccountDetails() == null || campaign.whatsappBusinessAccountDetails().isEmpty()) {
+        if (campaign.wabaNumbers() == null || campaign.wabaNumbers().isEmpty()) {
             log.error("No WaBa phone number configured for campaign [{}]. Marking all targets as FAILED.", campaignId);
             handleBatchLevelFailure(batchEvent, "NO_WABA_CONFIGURED", "No WaBa phone number found in campaign configuration");
             return;
@@ -121,13 +121,12 @@ public class BatchDispatcher {
         QuotaCheckResult quotaResult = quotaManager.resolveCombination(campaign);
 
         if (!quotaResult.allowed()) {
-            log.warn("Quota exhausted for target [{}]. Type: {}, Reason: {}", targetPhoneNumber, quotaResult.exhaustionType(), quotaResult.reason());
+            log.warn("Quota exhausted. Type: {}, Reason: {}", quotaResult.exhaustionType(), quotaResult.reason());
             MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, "QUOTA_EXHAUSTED", quotaResult.reason(), null, 0);
             messageStateRepository.saveDispatchResult(failedEvent, null, null);
             return failedEvent;
         }
 
-        final String resolvedWabaId = quotaResult.wabaId();
         final String resolvedWabaPhoneNumberId = quotaResult.wabaPhoneNumberId();
         final String resolvedTemplateId = quotaResult.templateId();
 
@@ -146,7 +145,7 @@ public class BatchDispatcher {
         // ── Handle Success ─────────────────────────────────────────────────
         if (sendResult.success()) {
             // QuotaManager handles ALL: increment counters + check limits + open circuits
-            quotaManager.recordSuccessAndCheckLimits(campaign, batchEvent.campaignId(), resolvedWabaPhoneNumberId, resolvedWabaId, resolvedTemplateId);
+            quotaManager.recordSuccessAndCheckLimits(campaign, batchEvent.campaignId().toString(), campaign.wabaId(), resolvedTemplateId);
             
             MessageStatusResultEvent successEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), true, null, null, sendResult.whatsappMessageId(), 0);
             messageStateRepository.saveDispatchResult(successEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
@@ -158,13 +157,13 @@ public class BatchDispatcher {
             String errorCode = resolveErrorCode(sendResult);
 
             // QuotaManager handles circuit breaker opening
-            quotaManager.handleRetryableError(errorCode, resolvedWabaId, resolvedWabaPhoneNumberId, sendResult.retryAfterSeconds());
+            quotaManager.handleRetryableError(errorCode, campaign.wabaId(), resolvedWabaPhoneNumberId);
 
             // Queue to MetaErrorOutbox for scheduled retry
             metaErrorOutboxService.queueForRetry(
                     batchEvent.campaignId(),
                     batchEvent.batchId(),
-                    resolvedWabaId,
+                    campaign.wabaId(),
                     resolvedWabaPhoneNumberId,
                     resolvedTemplateId,
                     List.of(targetPhoneNumber),
@@ -184,7 +183,7 @@ public class BatchDispatcher {
         FailureEvent dlqEvent = new FailureEvent(
                 batchEvent.campaignId(),
                 batchEvent.batchId(),
-                resolvedWabaId,
+                campaign.wabaId(),
                 resolvedWabaPhoneNumberId,
                 resolvedTemplateId,
                 List.of(targetPhoneNumber),

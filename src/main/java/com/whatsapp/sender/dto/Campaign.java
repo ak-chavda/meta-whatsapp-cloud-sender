@@ -7,19 +7,18 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public record Campaign(
         Integer id,
         String name,
-        @JsonProperty("whatsapp_business_account_details") List<WhatsAppBusinessAccountDetail> whatsappBusinessAccountDetails,
-        @JsonProperty("template_details") List<TemplateDetail> templateDetails) {
+        @JsonProperty("waba_id") String wabaId,
+        @JsonProperty("waba_numbers") List<WabaNumberDetail> wabaNumbers,
+        @JsonProperty("templates") List<TemplateDetail> templates) {
 
-    public record WhatsAppBusinessAccountDetail(
-            @JsonProperty("wa_ba_id") String waBaId,
-            @JsonProperty("wa_ba_phone_number_id") String waBaPhoneNumberId,
-            @JsonProperty("daily_sending_limit") int dailySendingLimit) {
+    public record WabaNumberDetail(
+            @JsonProperty("waba_phone_number_id") String wabaPhoneNumberId) {
     }
 
     public record TemplateDetail(
             @JsonProperty("template_id") String templateId,
-            @JsonProperty("daily_sending_limit") int dailySendingLimit,
-            @JsonProperty("sending_limit_reset_in_seconds") long sendingLimitResetInSeconds,
+            @JsonProperty("quota") int quota,
+            @JsonProperty("quota_reset_in_seconds") long quotaResetInSeconds,
 
             String name,
             Language language,

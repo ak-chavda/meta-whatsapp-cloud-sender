@@ -1,11 +1,12 @@
 package com.whatsapp.sender.service;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.Set;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Pre-flight kill switch that checks campaign status in Redis before
@@ -27,20 +28,17 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class KillSwitchService {
 
-    private static final String KEY_PATTERN = "whatsapp:campaign:%s:status:";
+    private static final String CAMPAIGN_KILL_SWITCH_STATUS = "whatsapp:campaign:%s:status";
     private static final Set<String> BLOCKED_STATUSES = Set.of("PAUSED", "CANCELLED");
 
     private final StringRedisTemplate redisTemplate;
 
     /**
      * Checks whether the campaign is in a blocked state.
-     *
-     * @param campaignId the campaign to check
-     * @return {@code true} if the batch should be discarded (campaign is PAUSED or CANCELLED)
      */
     public boolean shouldDiscardBatch(Integer campaignId) {
         try {
-            String key = String.format(KEY_PATTERN, campaignId);
+            String key = String.format(CAMPAIGN_KILL_SWITCH_STATUS, String.valueOf(campaignId));
             String status = redisTemplate.opsForValue().get(key);
 
             if (status != null && BLOCKED_STATUSES.contains(status.toUpperCase())) {

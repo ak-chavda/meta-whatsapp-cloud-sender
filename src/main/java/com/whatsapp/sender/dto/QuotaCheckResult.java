@@ -18,38 +18,21 @@ package com.whatsapp.sender.dto;
  */
 public record QuotaCheckResult(
         boolean allowed,
-        String wabaId,
         String wabaPhoneNumberId,
         String templateId,
-        String reason,
-        ExhaustionType exhaustionType
+        ExhaustionType exhaustionType,
+        String reason
 ) {
     public enum ExhaustionType {
         WABA, TEMPLATE, BURST, NONE
     }
 
     /** Factory for a successful quota check. */
-    public static QuotaCheckResult allowed(String wabaId, String wabaPhoneNumberId, String templateId) {
-        return new QuotaCheckResult(true, wabaId, wabaPhoneNumberId, templateId, null, ExhaustionType.NONE);
+    public static QuotaCheckResult allowed(String wabaPhoneNumberId, String templateId) {
+        return new QuotaCheckResult(true, wabaPhoneNumberId, templateId, ExhaustionType.NONE, null);
     }
 
-    /** Factory for an exhausted quota (WaBa daily quota — 80007). */
-    public static QuotaCheckResult exhaustedWaba(String reason) {
-        return new QuotaCheckResult(false, null, null, null, reason, ExhaustionType.WABA);
-    }
-
-    /** Factory for an exhausted quota (Template). */
-    public static QuotaCheckResult exhaustedTemplate(String reason) {
-        return new QuotaCheckResult(false, null, null, null, reason, ExhaustionType.TEMPLATE);
-    }
-
-    /** Factory for an exhausted burst/MPS limit (130429 — all phone numbers hit). */
-    public static QuotaCheckResult exhaustedBurst(String reason) {
-        return new QuotaCheckResult(false, null, null, null, reason, ExhaustionType.BURST);
-    }
-
-    /** Factory for when all combinations are exhausted. */
-    public static QuotaCheckResult exhausted(String reason) {
-        return new QuotaCheckResult(false, null, null, null, reason, ExhaustionType.NONE);
+    public static QuotaCheckResult exhausted(ExhaustionType type, String reason) {
+        return new QuotaCheckResult(false, null, null, type, reason);
     }
 }

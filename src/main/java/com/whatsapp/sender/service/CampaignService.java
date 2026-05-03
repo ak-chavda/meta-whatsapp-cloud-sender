@@ -12,8 +12,6 @@ import lombok.extern.slf4j.Slf4j;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.whatsapp.sender.dto.Campaign;
-import com.whatsapp.sender.dto.Campaign.TemplateDetail;
-import com.whatsapp.sender.dto.Campaign.WhatsAppBusinessAccountDetail;
 
 /**
  * Redis-backed caching layer for Campaign Details.
@@ -85,25 +83,5 @@ public class CampaignService {
         }
 
         return campaign;
-    }
-
-    /**
-     * Resolves the first available WaBa phone number ID from the campaign configuration.
-     */
-    public WhatsAppBusinessAccountDetail resolveWaBaDetail(Campaign campaign) {
-        if (campaign.whatsappBusinessAccountDetails() == null || campaign.whatsappBusinessAccountDetails().isEmpty()) {
-            return null;
-        }
-        return campaign.whatsappBusinessAccountDetails().get(0);
-    }
-
-    /**
-     * Resolves the first available template from the campaign's template quota configuration.
-     */
-    public TemplateDetail resolveTemplateDetail(Campaign campaign) {
-        if (campaign.templateDetails() == null || campaign.templateDetails().isEmpty()) {
-            return null;
-        }
-        return campaign.templateDetails().get(0);
     }
 }
