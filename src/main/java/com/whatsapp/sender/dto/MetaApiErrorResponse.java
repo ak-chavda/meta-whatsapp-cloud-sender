@@ -16,6 +16,12 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record MetaApiErrorResponse(ErrorDetails error) {
+
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record ErrorDetails(int code, String message, String type, String fbtrace_id) {}
+    public record ErrorDetails(
+            int code,
+            String message,
+            String type,
+            String fbtrace_id) {
+    }
 }

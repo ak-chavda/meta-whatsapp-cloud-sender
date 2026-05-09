@@ -40,7 +40,7 @@ public class CampaignService {
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
-    @Value("${app.quota.cache-ttl-minutes:10}")
+    @Value("${app.quota.cache-ttl-minutes}")
     private int cacheTtlMinutes;
 
     /**
@@ -53,7 +53,7 @@ public class CampaignService {
      * @return campaign details, or {@code null} if retrieval fails
      */
     public Campaign getCampaignDetail(Integer campaignId) {
-        String cacheKey = String.format(CAMPAIGN_DETAIL_KEY, campaignId);
+        final String cacheKey = String.format(CAMPAIGN_DETAIL_KEY, campaignId);
 
         try {
             String cached = redisTemplate.opsForValue().get(cacheKey);
@@ -61,6 +61,7 @@ public class CampaignService {
                 log.debug("Cache HIT for campaign [{}]", campaignId);
                 return objectMapper.readValue(cached, Campaign.class);
             }
+
         } catch (Exception e) {
             log.warn("Redis cache read failed for campaign [{}]. Falling back to upstream. Error: {}", campaignId, e.getMessage());
         }

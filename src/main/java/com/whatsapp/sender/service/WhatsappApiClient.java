@@ -17,8 +17,8 @@ import com.whatsapp.sender.dto.Campaign;
 import com.whatsapp.sender.dto.Campaign.TemplateDetail;
 import com.whatsapp.sender.dto.WhatsAppTemplateRequest;
 import com.whatsapp.sender.dto.WhatsAppTemplateRequest.Template;
-import com.whatsapp.sender.util.Utils;
 import com.whatsapp.sender.dto.WhatsappApiResponse;
+import com.whatsapp.sender.util.Utils;
 
 /**
  * Low-level HTTP client for the WhatsApp Cloud API (Meta Graph API).
@@ -46,24 +46,24 @@ public class WhatsappApiClient {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
 
-    @Value("${app.whatsapp.api-version:v22.0}")
+    @Value("${app.whatsapp.api-version}")
     private String apiVersion;
 
-    @Value("${app.whatsapp.base-url:https://graph.facebook.com}")
+    @Value("${app.whatsapp.base-url}")
     private String baseUrl;
 
-    @Value("${app.whatsapp.http-client.request-timeout-ms:30000}")
+    @Value("${app.whatsapp.http-client.request-timeout-ms}")
     private int requestTimeoutMs;
 
     /**
      * Result of a single WhatsApp API call.
      *
-     * @param success            whether the API call returned HTTP 200
-     * @param httpStatusCode     raw HTTP status code
-     * @param errorCode          formatted error code (e.g., "HTTP_200", "HTTP_429")
-     * @param whatsappMessageId  message ID from Meta API (null on failure)
-     * @param errorDetail        detailed error message on failure
-     * @param retryAfterSeconds  retry-after header value for 429 responses
+     * @param success           whether the API call returned HTTP 200
+     * @param httpStatusCode    raw HTTP status code
+     * @param errorCode         formatted error code (e.g., "HTTP_200", "HTTP_429")
+     * @param whatsappMessageId message ID from Meta API (null on failure)
+     * @param errorDetail       detailed error message on failure
+     * @param retryAfterSeconds retry-after header value for 429 responses
      */
     public record SendResult(
             boolean success,
@@ -71,28 +71,18 @@ public class WhatsappApiClient {
             String errorCode,
             String whatsappMessageId,
             String errorDetail,
-            Long retryAfterSeconds
-    ) {}
+            Long retryAfterSeconds) {
+    }
 
     /**
      * Sends a single template message to the WhatsApp Cloud API.
-     * <p>
      * This is a blocking call, designed to run on a virtual thread.
-     * Template details (name, language, components) are resolved from the templateId
-     * via the campaign's configuration at the dispatcher level.
-     *
-     * @param whatsappBusinessPhoneNumberId the sender's phone number ID (from WABA)
-     * @param accessToken                   bearer token for authentication
-     * @param targetPhoneNumber             the recipient phone number (E.164 format)
-     * @param templateName                  template name registered in Meta Business Manager
-     * @param templateLanguageCode          BCP-47 language code (e.g., "en_US", "hi")
-     * @param components                    dynamic template components (header, body, button);
-     *                                      pass an empty list for templates with no variables
      * @return structured result with status code mapping
      */
     public SendResult sendMessage(String wabaPhoneNumberId, String templateId, String accessToken, String targetPhoneNumber, Campaign campaign) {
 
         final String apiUrl = String.format("%s/%s/%s/messages", baseUrl, apiVersion, wabaPhoneNumberId);
+
         try {
             // Build the Meta API payload using typed DTOs
             final String payload = buildTemplatePayload(targetPhoneNumber, templateId, campaign);
@@ -108,7 +98,7 @@ public class WhatsappApiClient {
             log.debug("Sending message to [{}] via WaBa phone number ID [{}]", targetPhoneNumber, wabaPhoneNumberId);
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-            int statusCode = response.statusCode();
+            final int statusCode = response.statusCode();
             String errorCode = "HTTP_" + statusCode;
 
             if (statusCode == 200 || statusCode == 201) {
@@ -120,13 +110,14 @@ public class WhatsappApiClient {
 
             } else {
                 // Non-success HTTP status — do NOT retry, just map the code
-                String rawErrorBody = response.body();
-                
+                final String rawErrorBody = response.body();
+
                 try {
                     com.whatsapp.sender.dto.MetaApiErrorResponse errorResponse = objectMapper.readValue(rawErrorBody, com.whatsapp.sender.dto.MetaApiErrorResponse.class);
                     if (errorResponse != null && errorResponse.error() != null) {
                         errorCode = "META_" + errorResponse.error().code();
                     }
+
                 } catch (Exception e) {
                     // Ignore parse exception, fallback to HTTP_xxx
                 }
@@ -160,18 +151,6 @@ public class WhatsappApiClient {
         }
     }
 
-    /**
-     * Builds the WhatsApp Cloud API template message payload using typed DTOs.
-     * <p>
-     * The {@link WhatsAppTemplateRequest} record is serialized to JSON via Jackson.
-     * Components (header, body, button) carry the dynamic parameters that map to
-     * the template's placeholder variables ({{1}}, {{2}}, …).
-     *
-     * @param targetPhoneNumber    recipient phone number in E.164 format
-     * @param templateId           the template ID
-     * @param campaign             the campaign object containing template details
-     * @return serialized JSON payload
-     */
     private String buildTemplatePayload(String targetPhoneNumber, String templateId, Campaign campaign) throws Exception {
         TemplateDetail templateDetail = Utils.findTemplateDetail(campaign, templateId);
         final Template template = new Template(templateDetail.name(), templateDetail.language(), templateDetail.components());
@@ -183,7 +162,8 @@ public class WhatsappApiClient {
      * Truncates error response body to prevent log pollution from large API error responses.
      */
     private String truncateErrorBody(String body) {
-        if (body == null) return "No response body";
+        if (body == null)
+            return "No response body";
         return body.length() > 500 ? body.substring(0, 500) + "...[truncated]" : body;
     }
 }

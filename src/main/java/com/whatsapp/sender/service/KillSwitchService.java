@@ -12,8 +12,6 @@ import lombok.extern.slf4j.Slf4j;
  * Pre-flight kill switch that checks campaign status in Redis before
  * processing a consumed batch.
  * <p>
- * Redis key pattern: {@code campaign:{campaignId}:status}
- * <p>
  * If the campaign status is {@code PAUSED} or {@code CANCELLED}, the batch
  * is immediately discarded. This provides a near-instantaneous mechanism for
  * operators to halt message sending without waiting for in-flight batches
@@ -34,15 +32,15 @@ public class KillSwitchService {
     private final StringRedisTemplate redisTemplate;
 
     /**
-     * Checks whether the campaign is in a blocked state.
+     * Checks whether the campaign is paused or cancelled.
      */
     public boolean shouldDiscardBatch(Integer campaignId) {
         try {
-            String key = String.format(CAMPAIGN_KILL_SWITCH_STATUS, String.valueOf(campaignId));
-            String status = redisTemplate.opsForValue().get(key);
+            final String key = String.format(CAMPAIGN_KILL_SWITCH_STATUS, String.valueOf(campaignId));
+            final String status = redisTemplate.opsForValue().get(key);
 
             if (status != null && BLOCKED_STATUSES.contains(status.toUpperCase())) {
-                log.warn("Kill switch activated for campaign {} | Status: {}. Discarding batch.", campaignId, status);
+                log.warn("!!! Kill switch activated for campaign {} | Status: {}. Discarding batch.", campaignId, status);
                 return true;
             }
             return false;
@@ -51,7 +49,7 @@ public class KillSwitchService {
             // Fail-open: if Redis is down, allow batch processing to continue.
             // The monitoring stack should alert on Redis failures separately.
             e.printStackTrace();
-            log.error("Kill switch Redis check failed for campaign [{}]. Proceeding with batch processing. Error: {}", campaignId, e.getMessage());
+            log.error("!!! Kill switch Redis check failed for campaign [{}]. Proceeding with batch processing. Error: {}", campaignId, e.getMessage());
             return false;
         }
     }

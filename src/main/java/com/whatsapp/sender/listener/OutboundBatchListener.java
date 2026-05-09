@@ -1,15 +1,17 @@
 package com.whatsapp.sender.listener;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.whatsapp.sender.dto.OutboundBatchEvent;
-import com.whatsapp.sender.service.BatchDispatcher;
-import com.whatsapp.sender.service.KillSwitchService;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.whatsapp.sender.dto.OutboundBatchEvent;
+import com.whatsapp.sender.service.BatchDispatcher;
+import com.whatsapp.sender.service.KillSwitchService;
 
 /**
  * Kafka consumer for the {@code campaign-outbound-batch} topic.
@@ -55,7 +57,9 @@ public class OutboundBatchListener {
 
         OutboundBatchEvent batch;
         try {
+            log.debug("Campaign batch payload :: {}", payload);
             batch = objectMapper.readValue(payload, OutboundBatchEvent.class);
+
         } catch (Exception e) {
             log.error("Failed to deserialize batch payload, acknowledging and skipping. Payload: {}, Exception: {}", payload, e.getMessage());
             e.printStackTrace();
@@ -63,37 +67,38 @@ public class OutboundBatchListener {
             return;
         }
 
-        Integer batchId = batch.batchId();
-        Integer campaignId = batch.campaignId();
-        int targetCount = batch.targetPhoneNumbers() != null ? batch.targetPhoneNumbers().size() : 0;
-        log.info("Received batch [{}] for campaign [{}], Targets: {}", batchId, campaignId, targetCount);
+        final Integer batchId = batch.batchId();
+        final Integer campaignId = batch.campaignId();
+        final int targetCount = batch.targetPhoneNumbers().size();
+        log.info("Received batch [{}] for campaign [{}], TargetsCount: {}", batchId, campaignId, targetCount);
 
         try {
-            // ── Step 1: Pre-flight Kill Switch ──────────────────────────────
+            // ── Pre-flight Kill Switch ──────────────────────────────
             if (killSwitchService.shouldDiscardBatch(campaignId)) {
-                log.info("Batch [{}] discarded by kill switch. Campaign [{}] is paused/cancelled.", batchId, campaignId);
+                log.error("!!! Batch [{}] discarded by kill switch. Campaign [{}] is paused/cancelled.", batchId, campaignId);
                 acknowledgment.acknowledge();
                 return;
             }
 
-            // ── Step 2: Validate batch payload ──────────────────────────────
+            // ── Validate batch payload ──────────────────────────────
             if (batch.targetPhoneNumbers() == null || batch.targetPhoneNumbers().isEmpty()) {
-                log.warn("Batch [{}] for campaign [{}] has no targets. Acknowledging and skipping.", batchId, campaignId);
+                log.error("!!! Batch [{}] for campaign [{}] has no targets. Acknowledging and skipping.", batchId, campaignId);
                 acknowledgment.acknowledge();
                 return;
             }
 
-            // ── Step 3: Fan-out HTTP calls via Virtual Threads ──────────────
+            // ── Fan-out HTTP calls via Virtual Threads ──────────────
             batchDispatcher.dispatchBatch(batch);
 
-            // ── Step 4: Commit offset (at-least-once guarantee) ─────────────
+            // ── Commit offset (at-least-once guarantee) ─────────────
             acknowledgment.acknowledge();
 
             log.info("Batch [{}] fully processed and acknowledged. Campaign [{}], Targets: {}", batchId, campaignId, targetCount);
 
-        } catch (Exception ex) {
+        } catch (Exception e) {
             // Do NOT acknowledge — let Kafka redeliver this batch.
-            log.error("Unhandled exception processing batch [{}] for campaign [{}]. Offset NOT committed — batch will be redelivered. Error: {}", batchId, campaignId, ex.getMessage(), ex);
+            log.error("!!! Unhandled exception processing batch [{}] for campaign [{}]. Offset NOT committed — batch will be redelivered. Error: {}", batchId, campaignId, e.getMessage());
+            e.printStackTrace();
         }
     }
 }

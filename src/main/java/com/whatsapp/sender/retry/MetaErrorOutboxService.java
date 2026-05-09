@@ -18,7 +18,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import com.whatsapp.sender.dao.MetaErrorOutboxDocument;
-import com.whatsapp.sender.repository.MessageStateRepository;
 
 /**
  * Service to handle the write-path (batch inserts) and read-path (row-level locking)
@@ -37,8 +36,7 @@ import com.whatsapp.sender.repository.MessageStateRepository;
 public class MetaErrorOutboxService {
 
     private final MongoTemplate mongoTemplate;
-    private final MessageStateRepository messageStateRepository;
-    
+
     // In-memory buffer to prevent Thundering Herd on the database
     private final ConcurrentLinkedQueue<MetaErrorOutboxDocument> errorBuffer = new ConcurrentLinkedQueue<>();
 
@@ -53,10 +51,9 @@ public class MetaErrorOutboxService {
             List<String> targetPhoneNumbers,
             String errorCode,
             String errorMessage,
-            int retryCount
-    ) {
-        Instant retryAfter = calculateRetryAfter(errorCode, retryCount);
+            int retryCount) {
 
+        Instant retryAfter = calculateRetryAfter(errorCode, retryCount);
         MetaErrorOutboxDocument doc = new MetaErrorOutboxDocument(
                 UUID.randomUUID().toString(),
                 campaignId,
@@ -150,8 +147,7 @@ public class MetaErrorOutboxService {
      * Atomically locks ripe messages for a given error code pattern and returns them.
      * Uses atomic updateMany to assign a unique worker ID, then queries by that ID.
      *
-     * @param errorCodePattern exact match for error_code field (e.g., "130429", "80007")
-     *                         OR a regex prefix for 5xx errors
+     * @param errorCodePattern exact match for error_code field (e.g., "130429", "80007") OR a regex prefix for 5xx errors
      * @param is5xx            if true, matches any error_code starting with "HTTP_5"
      * @param limit            max documents to lock
      */
@@ -177,7 +173,7 @@ public class MetaErrorOutboxService {
         Query fetchQuery = new Query(Criteria.where("worker_id").is(workerId));
         return mongoTemplate.find(fetchQuery, MetaErrorOutboxDocument.class);
     }
-    
+
     /**
      * Removes the document from the active outbox after it has been
      * successfully pushed to the Kafka retry topic.

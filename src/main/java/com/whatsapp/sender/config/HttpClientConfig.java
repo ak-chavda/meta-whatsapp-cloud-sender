@@ -21,7 +21,7 @@ import java.util.concurrent.Executors;
 @Configuration
 public class HttpClientConfig {
 
-    @Value("${app.whatsapp.http-client.connect-timeout-ms:5000}")
+    @Value("${app.whatsapp.http-client.connect-timeout-ms}")
     private int connectTimeoutMs;
 
     /**

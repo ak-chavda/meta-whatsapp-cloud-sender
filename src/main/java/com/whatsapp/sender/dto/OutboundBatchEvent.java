@@ -1,27 +1,18 @@
 package com.whatsapp.sender.dto;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 /**
- * Inbound Kafka payload representing a batch of message targets
- * consumed from topic {@code campaign-outbound-batch}.
- * <p>
- * Minimal payload — only the essential identifiers needed to initiate dispatch.
- * All enrichment (template details, WaBa details, access tokens) is resolved
- * at runtime from the Campaign Service via {@code CampaignCacheService}.
- *
- * @param campaignId         parent campaign identifier
- * @param batchId            unique batch identifier within the campaign
- * @param targetPhoneNumbers list of E.164 formatted phone numbers to message
- */
+ * Campaign outbound batch event.
+*/
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record OutboundBatchEvent(
 
         Integer campaignId,
         Integer batchId,
-        String wabaPhoneNumberId, // Nullable, if provided strictly, send message from this Waba. Else rotate Wabas.
-        String templateId, // Nullable, if provided strictly, send message with this Template. Else rotate Templates.
+        String wabaPhoneNumberId, // TODO :: Nullable, if provided strictly, send message from this Waba. Else rotate Wabas.
+        String templateId, // TODO :: Nullable, if provided strictly, send message with this Template. Else rotate Templates.
         List<String> targetPhoneNumbers
 ) {}

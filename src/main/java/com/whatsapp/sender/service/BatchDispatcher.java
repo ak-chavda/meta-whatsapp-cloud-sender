@@ -57,23 +57,25 @@ public class BatchDispatcher {
     private final ExecutorService virtualThreadExecutor;
 
     /**
-     * Processes all target phone numbers in a batch concurrently using Virtual Threads.
+     * Processes all target phone numbers in a batch concurrently using Virtual
+     * Threads.
      */
     public void dispatchBatch(OutboundBatchEvent batchEvent) {
-        Integer campaignId = batchEvent.campaignId();
-        Integer batchId = batchEvent.batchId();
+
+        final Integer campaignId = batchEvent.campaignId();
+        final Integer batchId = batchEvent.batchId();
         List<String> targetPhoneNumbers = batchEvent.targetPhoneNumbers();
 
-        log.info("Dispatching batch [{}] for campaign [{}]. Targets: {}", batchId, campaignId, targetPhoneNumbers.size());
+        log.debug("Dispatching batch [{}] for campaign [{}]. Targets: {}", batchId, campaignId, targetPhoneNumbers.size());
 
-        // ── Step 1: Validate campaign details ────────────────────
+        // ── Validate campaign details ────────────────────
         Campaign campaign = campaignService.getCampaignDetail(campaignId);
         if (campaign == null) {
             log.error("Campaign detail retrieval failed for campaign [{}]. Marking all {} targets as FAILED.", campaignId, targetPhoneNumbers.size());
             handleBatchLevelFailure(batchEvent, FailureStatus.CAMPAIGN_DETAIL_RETRIEVAL_FAILED.name(), "Campaign details not found");
             return;
         }
-        
+
         if (campaign.templates() == null || campaign.templates().isEmpty()) {
             log.error("No template configured for campaign [{}]. Marking all targets as FAILED.", campaignId);
             handleBatchLevelFailure(batchEvent, FailureStatus.NO_TEMPLATE_CONFIGURED.name(), "No template found in campaign configuration");
@@ -86,9 +88,10 @@ public class BatchDispatcher {
             return;
         }
 
-        // ── Step 2: Fan-out via Virtual Threads ────────────────────────────
+        // ── Fan-out via Virtual Threads ────────────────────────────
         List<CompletableFuture<MessageStatusResultEvent>> futures = targetPhoneNumbers.stream()
-                .map(targetPhoneNumber -> CompletableFuture.supplyAsync(() -> processTarget(batchEvent, targetPhoneNumber, campaign), virtualThreadExecutor))
+                .map(targetPhoneNumber -> CompletableFuture.supplyAsync(
+                        () -> processTarget(batchEvent, targetPhoneNumber, campaign), virtualThreadExecutor))
                 .toList();
 
         // Barrier: wait for ALL HTTP calls to complete
@@ -96,8 +99,8 @@ public class BatchDispatcher {
 
         try {
             allCompleted.join();
-        } catch (Exception ex) {
-            log.error("Unexpected error waiting for batch [{}] completion: {}", batchId, ex.getMessage(), ex);
+        } catch (Exception e) {
+            log.error("===> Unexpected error waiting for batch [{}] completion: {}", batchId, e.getMessage(), e);
         }
 
         // Collect results for logging
@@ -105,7 +108,7 @@ public class BatchDispatcher {
         long successCount = results.stream().filter(MessageStatusResultEvent::isSendSuccessful).count();
         long failedCount = results.size() - successCount;
 
-        log.info("Batch [{}] completed. Campaign: [{}], Sent: {}, Failed: {}, Total: {}", batchId, campaignId, successCount, failedCount, results.size());
+        log.info("===> Batch [{}] completed. Campaign: [{}], Sent: {}, Failed: {}, Total: {}", batchId, campaignId, successCount, failedCount, results.size());
     }
 
     /**
@@ -114,13 +117,14 @@ public class BatchDispatcher {
      * Sequence: QuotaManager.resolveCombination() → fetch token → HTTP call → route result.
      * <p>
      * All quota incrementing and circuit breaker operations are delegated to
-     * {@link QuotaManager} — this class does NOT directly call {@link CircuitBreaker}.
+     * {@link QuotaManager} -- this class does NOT directly call {@link CircuitBreaker}.
      */
     private MessageStatusResultEvent processTarget(OutboundBatchEvent batchEvent, String targetPhoneNumber, Campaign campaign) {
 
         // ── Quota + Circuit Breaker Check (Template → 80007 → 130429) ──────
         QuotaCheckResult quotaResult = quotaManager.resolveCombination(campaign);
 
+        // If NOT allowed
         if (!quotaResult.allowed()) {
             log.warn("Quota exhausted. Type: {}, Reason: {}", quotaResult.exhaustionType(), quotaResult.reason());
             MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, quotaResult.exhaustionType().name(), quotaResult.reason(), null, 0);
@@ -171,7 +175,6 @@ public class BatchDispatcher {
                     sendResult.errorDetail(),
                     0 // first attempt
             );
-
             return createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, errorCode, sendResult.errorDetail(), null, 0);
         }
 
@@ -190,8 +193,7 @@ public class BatchDispatcher {
                 sendResult.errorCode(),
                 sendResult.errorDetail(),
                 0,
-                Instant.now()
-        );
+                Instant.now());
         dlqService.routeToDlq(dlqEvent, "Non-retryable error: " + sendResult.errorCode());
 
         return failedEvent;
@@ -207,7 +209,7 @@ public class BatchDispatcher {
         }
         String errorCode = sendResult.errorCode();
         if (errorCode != null) {
-            // TODO :: need to confirm aobut the META error code constants | Will this exact string is returned from meta ? 
+            // TODO :: need to confirm aobut the META error code constants | Will this exact string is returned from meta ?
             return errorCode.equals("META_130429") || errorCode.equals("META_80007");
         }
         return false;
@@ -236,7 +238,10 @@ public class BatchDispatcher {
     /**
      * Creates a per-targetNumber status result event (internal tracking only, not published to Kafka).
      */
-    private MessageStatusResultEvent createStatusEvent(OutboundBatchEvent batch, List<String> targetPhoneNumbers, boolean isSendSuccessful, String errorCode, String errorMessage, String whatsappMessageId, int retryCount) {
+    private MessageStatusResultEvent createStatusEvent(
+            OutboundBatchEvent batch, List<String> targetPhoneNumbers, boolean isSendSuccessful, 
+            String errorCode, String errorMessage, String whatsappMessageId, int retryCount) {
+
         return new MessageStatusResultEvent(
                 batch.batchId(),
                 batch.campaignId(),
@@ -246,7 +251,6 @@ public class BatchDispatcher {
                 errorMessage,
                 whatsappMessageId,
                 retryCount,
-                Instant.now()
-        );
+                Instant.now());
     }
 }

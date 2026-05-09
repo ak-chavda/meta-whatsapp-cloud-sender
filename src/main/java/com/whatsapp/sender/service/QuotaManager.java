@@ -16,24 +16,15 @@ import com.whatsapp.sender.dto.QuotaCheckResult.ExhaustionType;
 import com.whatsapp.sender.util.Utils;
 
 /**
- * Consolidated Distributed Quota & Circuit Breaker Manager.
- * <p>
  * This is the <strong>single source of truth</strong> for all quota checking,
  * incrementing, and circuit breaker operations. No other service should
  * directly call CircuitBreaker or manipulate Redis quota keys.
  *
  * <h3>Pre-Send Resolution Sequence:</h3>
  * <ol>
- *   <li><strong>Template Check</strong>: Is this template exhausted?
- *       → Rotate to next template.
- *       → If ALL templates exhausted → open per-template circuits with
- *         {@code sendingLimitResetInSeconds}, return exhausted.</li>
- *   <li><strong>Daily Quota Check (80007)</strong>: Is this WABA's daily
- *       quota hit? → Rotate to next WABA.
- *       → If ALL WABAs exhausted → return exhausted.</li>
- *   <li><strong>Burst/MPS Check (130429)</strong>: Is this phone number's
- *       burst circuit open? → Rotate to next phone number.
- *       → If ALL phone numbers hit burst limit → return exhausted.</li>
+ *   <li><strong>Template Check</strong>: Is this template exhausted? → Rotate to next template. → If ALL templates exhausted → return exhausted.</li>
+ *   <li><strong>Daily Quota Check (80007)</strong>: Is this WABA's daily quota hit (all WABA-numbers exhausted)? → return exhausted.</li>
+ *   <li><strong>Burst/MPS Check (130429)</strong>: Is this phone number's burst circuit open? → Rotate to next phone number. → If ALL phone numbers hit burst limit → return exhausted.</li>
  * </ol>
  *
  * <h3>Post-Send Increment:</h3>
@@ -50,7 +41,7 @@ import com.whatsapp.sender.util.Utils;
 public class QuotaManager {
 
     private static final String TEMPLATE_QUOTA_USED_COUNTER_KEY = "waba:%s:template:%s:quota:used";
-    private static final String CAMPAIGN_WABA_SUCCESS_KEY = "campaign:%s:waba:%s:success";
+    private static final String CAMPAIGN_WABA_SUCCESS_COUNT_KEY = "campaign:%s:waba:%s:success_count";
 
     private final StringRedisTemplate redisTemplate;
     private final CircuitBreaker circuitBreaker;
@@ -66,22 +57,23 @@ public class QuotaManager {
      * </ol>
      */
     public QuotaCheckResult resolveCombination(Campaign campaign) {
+
         final String campaignId = String.valueOf(campaign.id());
         final String wabaId = campaign.wabaId();
 
-        // ── Step 1: Resolve Template ───────────────────────────────────────
+        // ── Resolve Template ───────────────────────────────────────
         TemplateDetail resolvedTemplate = resolveTemplate(wabaId, campaign.templates());
         if (resolvedTemplate == null) {
             return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE, "All templates exhausted for campaign " + campaignId);
         }
 
-        // ── Step 2: Resolve WABA (Daily Quota — 80007) ─────────────────────
+        // ── Resolve WABA (Daily Quota — 80007) ─────────────────────
         // check if WaBa account is exhausted along with all its numbers (reset in 24 hrs)
         if (circuitBreaker.isDailyQuotaCircuitOpen(wabaId)) {
             return QuotaCheckResult.exhausted(ExhaustionType.WABA, "All WABA phone numbers exhausted (daily quota) for campaign " + campaignId);
         }
 
-        // ── Step 3: Resolve Phone Number (Burst/MPS — 130429) ──────────────
+        // ── Resolve Phone Number (Burst/MPS — 130429) ──────────────
         WabaNumberDetail resolvedWabaNumber = resolveWabaNumber(wabaId, campaign.wabaNumbers());
         if (resolvedWabaNumber == null) {
             return QuotaCheckResult.exhausted(ExhaustionType.BURST, "All WABA phone numbers exhausted (burst/MPS) for campaign " + campaignId);
@@ -91,13 +83,10 @@ public class QuotaManager {
     }
 
     /**
-     * Step 1: Resolve an available template.
-     * <p>
      * For each template in the campaign:
      * <ol>
      *   <li>Check template circuit (campaignId:templateId) → if open, skip</li>
-     *   <li>Check template quota count vs limit → if exhausted, open circuit
-     *       with {@code sendingLimitResetInSeconds}, skip</li>
+     *   <li>Check template quota count vs limit → if exhausted, open circuit with {@code sendingLimitResetInSeconds}, skip</li>
      *   <li>If found available → return it</li>
      * </ol>
      * If ALL templates exhausted → return null.
@@ -122,9 +111,7 @@ public class QuotaManager {
     }
 
     /**
-     * Step 3: Resolve an available WABA by burst/MPS limit (130429).
-     * <p>
-     * Re-iterates through WABAs that pass daily quota AND burst circuit check.
+     * Iterates through WABAs that pass daily quota AND burst circuit check.
      * The burst circuit is scoped per WaBa Phone Number ID.
      */
     private WabaNumberDetail resolveWabaNumber(String wabaId, List<WabaNumberDetail> wabaNumbers) {
@@ -157,7 +144,7 @@ public class QuotaManager {
      */
     public void recordSuccessAndCheckLimits(Campaign campaign, String campaignId, String wabaId, String templateId) {
         // increment success count for campaign + waba
-        incrementCounter(String.format(CAMPAIGN_WABA_SUCCESS_KEY, campaignId, wabaId));
+        incrementCounter(String.format(CAMPAIGN_WABA_SUCCESS_COUNT_KEY, campaignId, wabaId));
 
         final String quotaUsageRedisKey = String.format(TEMPLATE_QUOTA_USED_COUNTER_KEY, wabaId, templateId);
         // increment template usage counter
@@ -191,7 +178,6 @@ public class QuotaManager {
 
     /**
      * Atomically increments a counter and returns the new value.
-     * Sets TTL on first creation to auto-expire at end of day.
      */
     private long incrementCounter(String key) {
         try {
