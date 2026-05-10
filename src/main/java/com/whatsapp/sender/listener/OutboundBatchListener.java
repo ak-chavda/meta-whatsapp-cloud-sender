@@ -70,7 +70,7 @@ public class OutboundBatchListener {
         final Integer batchId = batch.batchId();
         final Integer campaignId = batch.campaignId();
         final int targetCount = batch.targetPhoneNumbers().size();
-        log.info("Received batch [{}] for campaign [{}], TargetsCount: {}", batchId, campaignId, targetCount);
+        log.debug("Received batch [{}] for campaign [{}], TargetsCount: {}", batchId, campaignId, targetCount);
 
         try {
             // ── Pre-flight Kill Switch ──────────────────────────────

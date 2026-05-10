@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import com.whatsapp.sender.dto.Campaign;
+import com.whatsapp.sender.dto.OutboundBatchEvent;
 import com.whatsapp.sender.dto.Campaign.TemplateDetail;
 import com.whatsapp.sender.dto.Campaign.WabaNumberDetail;
 import com.whatsapp.sender.dto.QuotaCheckResult;
@@ -83,6 +84,55 @@ public class QuotaManager {
     }
 
     /**
+     * Checks weather provided templateId & Waba-phone-number-id is available and
+     * circuit is not open.
+     */
+    public QuotaCheckResult verifyCombination(OutboundBatchEvent batchEvent, Campaign campaign) {
+
+        final String campaignId = campaign.id().toString();
+        final String wabaId = campaign.wabaId();
+
+        // Check WABA daily quota circuit
+        if (circuitBreaker.isDailyQuotaCircuitOpen(wabaId)) {
+            log.warn("Circuit is OPEN for the provided WABA [{}] in campaign", wabaId);
+            return QuotaCheckResult.exhausted(ExhaustionType.WABA, "Daily quota circuit is open for campaign " + campaignId);
+        }
+
+        final String providedTemplateId = batchEvent.templateId();
+        final String providedWabaPhoneNumberId = batchEvent.wabaPhoneNumberId();
+        String resolvedTemplateId = providedTemplateId;
+        String resolvedWabaPhoneNumberId = providedWabaPhoneNumberId;
+
+        // Resolve Template
+        if (providedTemplateId == null) {
+            TemplateDetail resolvedTemplate = resolveTemplate(wabaId, campaign.templates());
+            if (resolvedTemplate == null) {
+                return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE, "All templates exhausted for campaign " + campaignId);
+            }
+            resolvedTemplateId = resolvedTemplate.templateId();
+
+        } else if (circuitBreaker.isTemplateCircuitOpen(wabaId, providedTemplateId)) { // Check circuit for the provided-templateId
+            log.warn("Circuit is OPEN for the provided Template [{}] in batchEvent", providedTemplateId);
+            return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE, "Template circuit is open for campaign " + campaignId);
+        }
+
+        // Resolve WabaPhoneNumberId
+        if (providedWabaPhoneNumberId == null) {
+            WabaNumberDetail resolvedWabaNumber = resolveWabaNumber(wabaId, campaign.wabaNumbers());
+            if (resolvedWabaNumber == null) {
+                return QuotaCheckResult.exhausted(ExhaustionType.BURST, "All WABA phone numbers exhausted (burst/MPS) for campaign " + campaignId);
+            }
+            resolvedWabaPhoneNumberId = resolvedWabaNumber.wabaPhoneNumberId();
+
+        } else if (circuitBreaker.isBurstLimitCircuitOpen(providedWabaPhoneNumberId)) { // Check burst/MPS circuit (130429) for the provided-wabaPhoneNumberId
+            log.warn("Circuit is OPEN for WaBa phone number [{}] in batchEvent", providedWabaPhoneNumberId);
+            return QuotaCheckResult.exhausted(ExhaustionType.BURST, "Burst circuit is open for campaign " + campaignId);
+        }
+
+        return QuotaCheckResult.allowed(resolvedWabaPhoneNumberId, resolvedTemplateId);
+    }
+
+    /**
      * For each template in the campaign:
      * <ol>
      *   <li>Check template circuit (campaignId:templateId) → if open, skip</li>
@@ -95,7 +145,7 @@ public class QuotaManager {
         for (TemplateDetail template : templates) {
             String templateId = template.templateId();
 
-            // 1a. Check template circuit
+            // Check template circuit
             if (circuitBreaker.isTemplateCircuitOpen(wabaId, templateId)) {
                 log.debug("Template [{}] circuit is OPEN. Rotating...", templateId);
                 continue;
@@ -142,7 +192,11 @@ public class QuotaManager {
      *   <li>Increment campaign success counter</li>
      * </ol>
      */
-    public void recordSuccessAndCheckLimits(Campaign campaign, String campaignId, String wabaId, String templateId) {
+    public void recordSuccessAndCheckLimits(Campaign campaign, String templateId) {
+
+        final String campaignId = campaign.id().toString();
+        final String wabaId = campaign.wabaId();
+
         // increment success count for campaign + waba
         incrementCounter(String.format(CAMPAIGN_WABA_SUCCESS_COUNT_KEY, campaignId, wabaId));
 

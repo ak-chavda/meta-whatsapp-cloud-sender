@@ -12,13 +12,14 @@ import lombok.extern.slf4j.Slf4j;
 
 import com.whatsapp.sender.dto.Campaign;
 import com.whatsapp.sender.dto.FailureEvent;
-import com.whatsapp.sender.dto.FailureStatus;
 import com.whatsapp.sender.dto.MessageStatusResultEvent;
 import com.whatsapp.sender.dto.OutboundBatchEvent;
 import com.whatsapp.sender.dto.QuotaCheckResult;
+import com.whatsapp.sender.enums.FailureStatus;
 import com.whatsapp.sender.repository.MessageStateRepository;
 import com.whatsapp.sender.retry.DlqService;
 import com.whatsapp.sender.retry.MetaErrorOutboxService;
+import com.whatsapp.sender.util.Utils;
 
 /**
  * Fans out WhatsApp HTTP calls across Virtual Threads for a consumed batch.
@@ -121,8 +122,9 @@ public class BatchDispatcher {
      */
     private MessageStatusResultEvent processTarget(OutboundBatchEvent batchEvent, String targetPhoneNumber, Campaign campaign) {
 
-        // ── Quota + Circuit Breaker Check (Template → 80007 → 130429) ──────
-        QuotaCheckResult quotaResult = quotaManager.resolveCombination(campaign);
+        QuotaCheckResult quotaResult = (batchEvent.wabaPhoneNumberId() == null && batchEvent.templateId() == null)
+                ? quotaManager.resolveCombination(campaign)
+                : quotaManager.verifyCombination(batchEvent, campaign);
 
         // If NOT allowed
         if (!quotaResult.allowed()) {
@@ -139,7 +141,7 @@ public class BatchDispatcher {
         String accessToken = campaignClient.fetchTokenForWhatsappAccount(resolvedWabaPhoneNumberId);
         if (accessToken == null || accessToken.isEmpty()) {
             log.error("Access token retrieval failed for WaBa [{}]. Saving as permanent failure.", resolvedWabaPhoneNumberId);
-            MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, FailureStatus.TOKEN_RETRIEVAL_FAILED.name(), "Access token not found for WaBa: " + resolvedWabaPhoneNumberId, null, 0);
+            MessageStatusResultEvent failedEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), false, FailureStatus.ACCESS_TOKEN_RETRIEVAL_FAILED.name(), "Access token not found for WaBa: " + resolvedWabaPhoneNumberId, null, 0);
             messageStateRepository.saveDispatchResult(failedEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
             return failedEvent;
         }
@@ -150,15 +152,15 @@ public class BatchDispatcher {
         // ── Handle Success ─────────────────────────────────────────────────
         if (sendResult.success()) {
             // QuotaManager handles ALL: increment counters + check limits + open circuits
-            quotaManager.recordSuccessAndCheckLimits(campaign, batchEvent.campaignId().toString(), campaign.wabaId(), resolvedTemplateId);
+            quotaManager.recordSuccessAndCheckLimits(campaign, resolvedTemplateId);
             MessageStatusResultEvent successEvent = createStatusEvent(batchEvent, List.of(targetPhoneNumber), true, null, null, sendResult.whatsappMessageId(), 0);
             messageStateRepository.saveDispatchResult(successEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
             return successEvent;
         }
 
         // ── Handle Retryable Errors (130429, 80007, 429, 5xx) → Outbox ────
-        if (isRetryable(sendResult)) {
-            String errorCode = resolveErrorCode(sendResult);
+        if (Utils.isRetryable(sendResult)) {
+            String errorCode = Utils.resolveErrorCode(sendResult);
 
             // QuotaManager handles circuit breaker opening
             quotaManager.handleRetryableError(errorCode, campaign.wabaId(), resolvedWabaPhoneNumberId);
@@ -197,34 +199,6 @@ public class BatchDispatcher {
         dlqService.routeToDlq(dlqEvent, "Non-retryable error: " + sendResult.errorCode());
 
         return failedEvent;
-    }
-
-    /**
-     * Determines if a send result is retryable.
-     * Retryable: 429, 5xx, META_130429 (burst/MPS), META_80007 (daily quota).
-     */
-    private boolean isRetryable(WhatsappApiClient.SendResult sendResult) {
-        if (sendResult.httpStatusCode() == 429 || sendResult.httpStatusCode() >= 500) {
-            return true;
-        }
-        String errorCode = sendResult.errorCode();
-        if (errorCode != null) {
-            // TODO :: need to confirm aobut the META error code constants | Will this exact string is returned from meta ?
-            return errorCode.equals("META_130429") || errorCode.equals("META_80007");
-        }
-        return false;
-    }
-
-    /**
-     * Resolves the error code for outbox storage.
-     * Strips "META_" prefix for Meta API errors, keeps "HTTP_xxx" for HTTP errors.
-     */
-    private String resolveErrorCode(WhatsappApiClient.SendResult sendResult) {
-        String errorCode = sendResult.errorCode();
-        if (errorCode != null && errorCode.startsWith("META_")) {
-            return errorCode.substring(5); // "META_130429" → "130429"
-        }
-        return errorCode; // "HTTP_500" stays as-is
     }
 
     /**

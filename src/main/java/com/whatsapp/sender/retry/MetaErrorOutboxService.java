@@ -152,17 +152,15 @@ public class MetaErrorOutboxService {
      * @param limit            max documents to lock
      */
     public List<MetaErrorOutboxDocument> fetchAndLockRipeMessages(String errorCodePattern, boolean is5xx, int limit) {
-        String workerId = UUID.randomUUID().toString();
-        Instant now = Instant.now();
 
-        Criteria criteria = Criteria.where("status").is("PENDING").and("retry_after").lte(now);
-
+        Criteria criteria = Criteria.where("status").is("PENDING").and("retry_after").lte(Instant.now());
         if (is5xx) {
             criteria = criteria.and("error_code").regex("^HTTP_5");
         } else {
             criteria = criteria.and("error_code").is(errorCodePattern);
         }
 
+        final String workerId = UUID.randomUUID().toString();
         Query lockQuery = new Query(criteria).limit(limit);
         Update lockUpdate = new Update().set("status", "PROCESSING").set("worker_id", workerId);
 

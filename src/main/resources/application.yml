@@ -23,11 +23,12 @@ app:
             campaign-outbound-batch: ${CAMPAIGN_OUTBOUND_BATCH_TOPIC:dev.topic.campaign-outbound-messages-batch}
             # Retryable failures (130429, 80007, 5xx) are stored in MongoDB outbox.
             # Schedulers push ripe outbox documents to the retry topic.
-            whatsapp-failures-retry: ${WHATSAPP_FAILURES_RETRY_TOPIC:dev.topic.whatsapp-failures-retry}
-            whatsapp-failures-dlq: ${WHATSAPP_FAILURES_DLQ_TOPIC:dev.topic.whatsapp-failures-dlq}
+            campaign-failures-retry: ${CAMPAIGN_OUTBOUND_MESSAGES_RETRY_KAFKA_TOPIC:dev.topic.campaign-outbound-messages-retry}
+            campaign-failures-dlq: ${CAMPAIGN_OUTBOUND_MESSAGES_FAILED_KAFKA_TOPIC:dev.topic.campaign-outbound-messages-failed}
     retry:
-        max-attempts: 3
-        short-delay-seconds: 60
+        # This is the retry attempts for each failed numbers
+        # TODO : This can even be expanded to failure type wise retry attempts
+        max-attempts: 10
     quota:
         # TTL for cached campaign details in Redis (in minutes)
         cache-ttl-minutes: ${QUOTA_CACHE_TTL_MINUTES:10}

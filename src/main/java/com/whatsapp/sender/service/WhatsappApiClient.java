@@ -15,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.whatsapp.sender.dto.Campaign;
 import com.whatsapp.sender.dto.Campaign.TemplateDetail;
+import com.whatsapp.sender.dto.MetaApiErrorResponse;
 import com.whatsapp.sender.dto.WhatsAppTemplateRequest;
 import com.whatsapp.sender.dto.WhatsAppTemplateRequest.Template;
 import com.whatsapp.sender.dto.WhatsappApiResponse;
@@ -111,9 +112,8 @@ public class WhatsappApiClient {
             } else {
                 // Non-success HTTP status — do NOT retry, just map the code
                 final String rawErrorBody = response.body();
-
                 try {
-                    com.whatsapp.sender.dto.MetaApiErrorResponse errorResponse = objectMapper.readValue(rawErrorBody, com.whatsapp.sender.dto.MetaApiErrorResponse.class);
+                    MetaApiErrorResponse errorResponse = objectMapper.readValue(rawErrorBody, MetaApiErrorResponse.class);
                     if (errorResponse != null && errorResponse.error() != null) {
                         errorCode = "META_" + errorResponse.error().code();
                     }
@@ -140,14 +140,14 @@ public class WhatsappApiClient {
                 return new SendResult(false, statusCode, errorCode, null, errorBody, retryAfter);
             }
 
-        } catch (InterruptedException ex) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("Thread interrupted while sending to [{}]", targetPhoneNumber);
-            return new SendResult(false, 0, "INTERRUPTED", null, "Thread interrupted: " + ex.getMessage(), null);
+            log.error("Thread interrupted while sending to [{}]: {}", targetPhoneNumber, e.getMessage());
+            return new SendResult(false, 0, "INTERRUPTED", null, "Thread interrupted: " + e.getMessage(), null);
 
-        } catch (Exception ex) {
-            log.error("Exception sending message to [{}]: {}", targetPhoneNumber, ex.getMessage(), ex);
-            return new SendResult(false, 0, "CLIENT_ERROR", null, "Client exception: " + ex.getMessage(), null);
+        } catch (Exception e) {
+            log.error("Exception sending message to [{}]: {}", targetPhoneNumber, e.getMessage());
+            return new SendResult(false, 0, "CLIENT_ERROR", null, "Client exception: " + e.getMessage(), null);
         }
     }
 

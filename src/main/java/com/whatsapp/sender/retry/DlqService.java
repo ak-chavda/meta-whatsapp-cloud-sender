@@ -30,14 +30,11 @@ public class DlqService {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
 
-    @Value("${app.kafka.topics.whatsapp-failures-dlq}")
+    @Value("${app.kafka.topics.campaign-failures-dlq}")
     private String dlqTopic;
 
     /**
      * Publishes a failure event to the DLQ topic.
-     *
-     * @param failureEvent the exhausted failure event with full error trail
-     * @param reason       human-readable reason for DLQ routing
      */
     public void routeToDlq(FailureEvent failureEvent, String reason) {
         try {
@@ -45,20 +42,21 @@ public class DlqService {
             String key = String.valueOf(failureEvent.campaignId());
 
             kafkaTemplate.send(dlqTopic, key, json)
-                    .whenComplete((result, ex) -> {
-                        if (ex != null) {
-                            log.error("CRITICAL: Failed to publish to DLQ for campaign [{}] with {} targets: {}. MESSAGE MAY BE LOST!",
-                                    failureEvent.campaignId(), failureEvent.targetPhoneNumbers().size(), ex.getMessage());
+                    .whenComplete((result, e) -> {
+                        if (e != null) {
+                            log.error("!!! CRITICAL: Failed to publish to DLQ for campaign [{}] with {} targets: {}. MESSAGE MAY BE LOST!", 
+                                failureEvent.campaignId(), failureEvent.targetPhoneNumbers().size(), e.getMessage());
+
                         } else {
-                            log.warn("Published to DLQ: campaign [{}] with {} targets. Reason: {}. Partition [{}] Offset [{}]",
+                            log.warn("!!! Published to DLQ: campaign [{}] with {} targets. Reason: {}. Partition [{}] Offset [{}]",
                                     failureEvent.campaignId(), failureEvent.targetPhoneNumbers().size(), reason,
                                     result.getRecordMetadata().partition(),
                                     result.getRecordMetadata().offset());
                         }
                     });
 
-        } catch (Exception ex) {
-            log.error("CRITICAL: Failed to serialize/publish DLQ event for campaign [{}]: {}. MESSAGE MAY BE LOST!", failureEvent.campaignId(), ex.getMessage(), ex);
+        } catch (Exception e) {
+            log.error("CRITICAL: Failed to serialize/publish DLQ event for campaign [{}]: {}. MESSAGE MAY BE LOST!", failureEvent.campaignId(), e.getMessage());
         }
     }
 }

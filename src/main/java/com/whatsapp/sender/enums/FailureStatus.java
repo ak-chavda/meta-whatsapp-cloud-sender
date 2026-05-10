@@ -1,0 +1,11 @@
+package com.whatsapp.sender.enums;
+
+public enum FailureStatus {
+
+    ACCESS_TOKEN_RETRIEVAL_FAILED,
+    CAMPAIGN_DETAIL_RETRIEVAL_FAILED,
+    NO_TEMPLATE_CONFIGURED,
+    NO_WABA_CONFIGURED,
+    MAX_RETRIES_EXHAUSTED,
+    UNKNOWN
+}
