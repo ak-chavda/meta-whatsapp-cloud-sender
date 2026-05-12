@@ -27,14 +27,11 @@ import com.whatsapp.sender.util.Utils;
  * For a batch of N target phone numbers, this dispatcher:
  * <ol>
  *   <li>Resolves campaign details from the Redis cache layer (quotas, template IDs).</li>
- *   <li>Delegates quota + circuit breaker checks to {@link QuotaManager} which
- *       follows the sequence: Template → Daily Quota (80007) → Burst/MPS (130429).</li>
+ *   <li>Delegates quota + circuit breaker checks to {@link QuotaManager} which follows the sequence: Template → Daily Quota (80007) → Burst/MPS (130429).</li>
  *   <li>Fetches the access token from the external service API (never cached).</li>
- *   <li>Submits N {@link CompletableFuture} tasks to the virtual thread executor,
- *       each executing a blocking HTTP call to the WhatsApp Cloud API.</li>
+ *   <li>Submits N {@link CompletableFuture} tasks to the virtual thread executor, each executing a blocking HTTP call to the WhatsApp Cloud API.</li>
  *   <li>Waits for ALL N futures to complete using {@link CompletableFuture#allOf}.</li>
- *   <li>On success: {@link QuotaManager#recordSuccessAndCheckLimits} handles
- *       quota increment + circuit breaker opening in one call.</li>
+ *   <li>On success: {@link QuotaManager#recordSuccessAndCheckLimits} handles quota increment + circuit breaker opening in one call.</li>
  *   <li>On retryable failure: queues to {@code MetaErrorOutboxDocument}.</li>
  *   <li>On non-retryable failure: persists to {@code MessageDispatchDocument} + DLQ.</li>
  * </ol>

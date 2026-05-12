@@ -14,30 +14,23 @@ import com.whatsapp.sender.service.BatchDispatcher;
 import com.whatsapp.sender.service.KillSwitchService;
 
 /**
- * Kafka consumer for the {@code campaign-outbound-batch} topic.
- * <p>
  * This is the entry point of the Sender Service pipeline:
+ * Consumes the campaign batch messages from outbound-batch kafka topic.
  * <pre>
  * Kafka Consume → Kill Switch Check → Virtual Thread Fan-out → MongoDB Persist
  * </pre>
- * <p>
  * Processing flow for each consumed record:
  * <ol>
- *   <li><strong>Kill Switch (Pre-flight)</strong>: Check Redis for campaign status.
- *       If PAUSED or CANCELLED, log and discard the batch.</li>
- *   <li><strong>Dispatch</strong>: Fan out HTTP calls to the WhatsApp Cloud API
- *       using Virtual Threads. Block until all targets are processed.</li>
- *   <li><strong>Acknowledge</strong>: Commit the Kafka offset only after all
- *       processing is complete.</li>
+ *   <li><strong>Kill Switch (Pre-flight)</strong>: Check Redis for campaign status. If PAUSED or CANCELLED, log and discard the batch.</li>
+ *   <li><strong>Dispatch</strong>: Fan out HTTP calls to the WhatsApp Cloud API using Virtual Threads. Block until all targets are processed.</li>
+ *   <li><strong>Acknowledge</strong>: Commit the Kafka offset only after all processing is complete.</li>
  * </ol>
  * <p>
  * Result routing:
  * <ul>
  *   <li><strong>Success</strong>: Persisted to {@code MessageDispatchDocument} (MongoDB).</li>
- *   <li><strong>Retryable failure</strong>: Queued to {@code MetaErrorOutboxDocument} (MongoDB).
- *       Schedulers pick these up and push to the retry Kafka topic.</li>
- *   <li><strong>Non-retryable failure</strong>: Persisted to {@code MessageDispatchDocument}
- *       (MongoDB) + DLQ.</li>
+ *   <li><strong>Retryable failure</strong>: Queued to {@code MetaErrorOutboxDocument} (MongoDB). Schedulers pick these up and push to the retry Kafka topic.</li>
+ *   <li><strong>Non-retryable failure</strong>: Persisted to {@code MessageDispatchDocument} (MongoDB) + DLQ.</li>
  * </ul>
  * <p>
  * The offset is committed LAST, ensuring at-least-once delivery semantics.

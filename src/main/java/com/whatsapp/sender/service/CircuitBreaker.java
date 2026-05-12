@@ -8,21 +8,14 @@ import java.time.Duration;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import static com.whatsapp.sender.common.Constant.CAMPAIGN_TEMPLATE_EXHAUSTED_PREFIX;
+import static com.whatsapp.sender.common.Constant.WABA_DAILY_QUOTA_EXHAUSTED_PREFIX;
+import static com.whatsapp.sender.common.Constant.WABA_PHONE_NUMBER_RATE_LIMIT_PREFIX;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class CircuitBreaker {
-
-    /** Per Phone Number ID — burst/MPS limit (130429). */
-    private static final String WABA_PHONE_NUMBER_RATE_LIMIT_PREFIX = "circuit:waba:rate-limit:";
-
-    /**
-     * Per WABA ID — daily quota limit (80007). All phone numbers share this pool.
-     */
-    private static final String WABA_DAILY_QUOTA_EXHAUSTED_PREFIX = "circuit:waba:daily-quota:";
-
-    /** Per Campaign — any template exhausted. */
-    private static final String CAMPAIGN_TEMPLATE_EXHAUSTED_PREFIX = "circuit:waba:%s:template:%s";
 
     private final StringRedisTemplate redisTemplate;
 

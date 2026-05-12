@@ -8,6 +8,7 @@ spring.threads.virtual.enabled: true
 # --- Custom Application Properties ---
 app:
     whatsapp:
+        hit-real-api: false
         api-version: v22.0
         base-url: ${META_WHATSAPP_BASE_URL:https://graph.facebook.com}
         http-client:
@@ -20,18 +21,17 @@ app:
             # example :: https://api.wa-campaigns.trusol.in/v1/campaign/16
     kafka:
         topics:
-            campaign-outbound-batch: ${CAMPAIGN_OUTBOUND_BATCH_TOPIC:dev.topic.campaign-outbound-messages-batch}
-            # Retryable failures (130429, 80007, 5xx) are stored in MongoDB outbox.
-            # Schedulers push ripe outbox documents to the retry topic.
-            campaign-failures-retry: ${CAMPAIGN_OUTBOUND_MESSAGES_RETRY_KAFKA_TOPIC:dev.topic.campaign-outbound-messages-retry}
-            campaign-failures-dlq: ${CAMPAIGN_OUTBOUND_MESSAGES_FAILED_KAFKA_TOPIC:dev.topic.campaign-outbound-messages-failed}
+            campaign-outbound-batch: ${WA_CAMPAIGN_OUTBOUND_MESSAGES_KAFKA_TOPIC:dev.topic.meta.whatsapp.campaign.outbound-messages-batch}
+            campaign-failures-retry: ${WA_CAMPAIGN_OUTBOUND_MESSAGES_RETRY_KAFKA_TOPIC:dev.topic.meta.whatsapp.campaign.outbound-messages-retry}
+            campaign-failures-dlq: ${WA_CAMPAIGN_OUTBOUND_MESSAGES_FAILED_KAFKA_TOPIC:dev.topic.meta.whatsapp.campaign.outbound-messages-failed}
     retry:
         # This is the retry attempts for each failed numbers
         # TODO : This can even be expanded to failure type wise retry attempts
         max-attempts: 10
-    quota:
-        # TTL for cached campaign details in Redis (in minutes)
-        cache-ttl-minutes: ${QUOTA_CACHE_TTL_MINUTES:10}
+    campaign:
+        details:
+            # TTL for cached campaign details in Redis (in minutes)
+            cache-ttl-minutes: ${QUOTA_CACHE_TTL_MINUTES:10}
     delayed-retry:
         # How often (in ms) the scheduler polls MongoDB for matured delayed retries
         poll-interval-ms: ${DELAYED_RETRY_POLL_MS:60000}
@@ -40,29 +40,28 @@ app:
 
 # --- Redis Configuration ---
 spring.data.redis:
-    host: ${REDIS_HOST:localhost}
-    port: ${REDIS_PORT:6379}
-    username: ${REDIS_USERNAME:redis-user}
-    password: ${REDIS_PASSWORD:redis-password}
+    host: ${WA_CAMPAIGN_REDIS_HOST:localhost}
+    port: ${WA_CAMPAIGN_REDIS_PORT:6379}
+    username: ${WA_CAMPAIGN_REDIS_USERNAME:redis-user}
+    password: ${WA_CAMPAIGN_REDIS_PASSWORD:redis-password}
     timeout: 5000ms
 
 # --- MongoDB Configuration ---
-spring.mongodb:
-    uri: ${MONGODB_URI:mongodb://localhost:27017/whatsapp_sender}
+spring.mongodb.uri: ${WA_CAMPAIGN_SERVICE_MONGO_DB_URI:mongodb://localhost:27017/whatsapp_campaign}
 
 # --- Kafka auto configuration properties ---
 spring:
     kafka:
-        bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka.trusol.in:9093}
+        bootstrap-servers: ${WA_CAMPAIGN_BOOTSTRAP_SERVERS:kafka.trusol.in:9093}
         properties:
             security.protocol: ${KAFKA_SECURITY_PROTOCOL:SASL_SSL}
             sasl.mechanism: ${KAFKA_SASL_MECHANISM:SCRAM-SHA-256}
-            sasl.jaas.config: org.apache.kafka.common.security.scram.ScramLoginModule required username="${KAFKA_USERNAME}" password="${KAFKA_PASSWORD}";
+            sasl.jaas.config: org.apache.kafka.common.security.scram.ScramLoginModule required username="${WA_CAMPAIGN_KAFKA_USERNAME}" password="${WA_CAMPAIGN_KAFKA_PASSWORD}";
             # Crucial: Adjust based on how long a single message might take to process
             max.poll.interval.ms: 300000
         consumer:
             # Pick any name for group you like. Kafka creates it automatically.
-            group-id: ${CAMPAIGN_OUTBOUND_MESSAGES_SERVICE_KAFKA_CONSUMER_GROUP_ID:dev.consumer.group.campaign-outbound-service}
+            group-id: ${WA_CAMPAIGN_OUTBOUND_MESSAGES_SERVICE_KAFKA_CONSUMER_GROUP_ID:dev.consumer.group.meta.whatsapp.campaign-sender-service}
             key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
             value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
             # 'earliest' ensures you don't miss messages if the consumer is down

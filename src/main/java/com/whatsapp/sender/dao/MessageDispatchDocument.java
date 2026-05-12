@@ -18,10 +18,8 @@ import java.util.List;
  * Space-efficient: groups target phone numbers by outcome within the same batch.
  * For example, if a batch of 100 targets has 80 successes and 20 failures with
  * the same error code, only 2 documents are created instead of 100.
- * <p>
- * Collection: {@code message_dispatch_log}
  */
-@Document(collection = "message_dispatch_log")
+@Document(collection = "campaign_message_dispatch_log")
 @CompoundIndex(name = "campaign_batch_idx", def = "{'campaign_id': 1, 'batch_id': 1}")
 public record MessageDispatchDocument(
 
@@ -54,5 +52,5 @@ public record MessageDispatchDocument(
         String templateId,
 
         @Field("dispatched_at")
-        Instant dispatchedAt
-) {}
+        Instant dispatchedAt) {
+}

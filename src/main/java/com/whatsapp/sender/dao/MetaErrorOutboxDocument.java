@@ -14,20 +14,18 @@ import java.util.List;
  * <p>
  * Supports all retryable error types:
  * <ul>
- *   <li><strong>130429 (Burst/MPS Limit)</strong>: Per Phone Number ID,
- *       exponential backoff (seconds).</li>
- *   <li><strong>80007 (Daily Quota Limit)</strong>: Per WABA (all phone numbers
- *       share the pool), strict 24-hour retry.</li>
- *   <li><strong>5xx (Server Errors)</strong>: Transient server errors,
- *       short exponential backoff (60s, 120s, 300s).</li>
+ *   <li><strong>130429 (Burst/MPS Limit)</strong>: Per Phone Number ID, exponential backoff (seconds).</li>
+ *   <li><strong>80007 (Daily Quota Limit)</strong>: Per WABA (all phone numbers share the pool), strict 24-hour retry.</li>
+ *   <li><strong>5xx (Server Errors)</strong>: Transient server errors, short exponential backoff (60s, 120s, 300s).</li>
  * </ul>
  * <p>
  * Uses a composite index on {"status": 1, "error_code": 1, "retry_after": 1}
  * to prevent full table scans when the scheduler polls for ripe messages.
  */
-@Document(collection = "meta_error_outbox")
+@Document(collection = "campaign_message_meta_error_outbox")
 @CompoundIndex(name = "status_error_retry_idx", def = "{'status': 1, 'error_code': 1, 'retry_after': 1}")
 public record MetaErrorOutboxDocument(
+
         @Id 
         String id,
 

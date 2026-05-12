@@ -47,6 +47,9 @@ public class WhatsappApiClient {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
 
+    @Value("${app.whatsapp.hit-real-api}")
+    private Boolean hitRealApi;
+
     @Value("${app.whatsapp.api-version}")
     private String apiVersion;
 
@@ -81,6 +84,12 @@ public class WhatsappApiClient {
      * @return structured result with status code mapping
      */
     public SendResult sendMessage(String wabaPhoneNumberId, String templateId, String accessToken, String targetPhoneNumber, Campaign campaign) {
+
+        // TODO :: enhance this to mock random whatsapp cloud API response
+        if(!hitRealApi){
+            log.info("*** Not hitting whatsapp cloud real API ***");
+            return new SendResult(true, 200, "HTTP_200", "MOCK-123456789", null, null);
+        }
 
         final String apiUrl = String.format("%s/%s/%s/messages", baseUrl, apiVersion, wabaPhoneNumberId);
 

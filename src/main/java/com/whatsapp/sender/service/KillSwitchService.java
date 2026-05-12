@@ -8,6 +8,8 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import static com.whatsapp.sender.common.Constant.CAMPAIGN_KILL_SWITCH_STATUS;
+
 /**
  * Pre-flight kill switch that checks campaign status in Redis before
  * processing a consumed batch.
@@ -26,7 +28,6 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class KillSwitchService {
 
-    private static final String CAMPAIGN_KILL_SWITCH_STATUS = "whatsapp:campaign:%s:status";
     private static final Set<String> BLOCKED_STATUSES = Set.of("PAUSED", "CANCELLED");
 
     private final StringRedisTemplate redisTemplate;

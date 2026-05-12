@@ -13,6 +13,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.whatsapp.sender.dto.Campaign;
 
+import static com.whatsapp.sender.common.Constant.CAMPAIGN_DETAIL_KEY;
+
 /**
  * Redis-backed caching layer for Campaign Details.
  * <p>
@@ -34,13 +36,11 @@ import com.whatsapp.sender.dto.Campaign;
 @RequiredArgsConstructor
 public class CampaignService {
 
-    private static final String CAMPAIGN_DETAIL_KEY = "campaign:%d:detail";
-
     private final CampaignClient campaignClient;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
-    @Value("${app.quota.cache-ttl-minutes}")
+    @Value("${app.campaign.details.cache-ttl-minutes}")
     private int cacheTtlMinutes;
 
     /**

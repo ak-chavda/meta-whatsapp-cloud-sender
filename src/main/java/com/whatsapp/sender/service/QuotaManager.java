@@ -16,6 +16,9 @@ import com.whatsapp.sender.dto.QuotaCheckResult;
 import com.whatsapp.sender.dto.QuotaCheckResult.ExhaustionType;
 import com.whatsapp.sender.util.Utils;
 
+import static com.whatsapp.sender.common.Constant.CAMPAIGN_WABA_SUCCESS_COUNT_KEY;
+import static com.whatsapp.sender.common.Constant.TEMPLATE_QUOTA_USED_COUNTER_KEY;
+
 /**
  * This is the <strong>single source of truth</strong> for all quota checking,
  * incrementing, and circuit breaker operations. No other service should
@@ -40,9 +43,6 @@ import com.whatsapp.sender.util.Utils;
 @Service
 @RequiredArgsConstructor
 public class QuotaManager {
-
-    private static final String TEMPLATE_QUOTA_USED_COUNTER_KEY = "waba:%s:template:%s:quota:used";
-    private static final String CAMPAIGN_WABA_SUCCESS_COUNT_KEY = "campaign:%s:waba:%s:success_count";
 
     private final StringRedisTemplate redisTemplate;
     private final CircuitBreaker circuitBreaker;
