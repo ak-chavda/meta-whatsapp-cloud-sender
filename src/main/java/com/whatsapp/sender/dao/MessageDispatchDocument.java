@@ -32,6 +32,12 @@ public record MessageDispatchDocument(
         @Field("batch_id")
         Integer batchId,
 
+        @Field("waba_phone_number_id")
+        String wabaPhoneNumberId,
+
+        @Field("template_id")
+        String templateId,
+
         @Indexed
         @Field("target_phone_numbers")
         List<String> targetPhoneNumbers,
@@ -45,11 +51,12 @@ public record MessageDispatchDocument(
         @Field("error_code")
         String errorCode,
 
-        @Field("waba_phone_number_id")
-        String wabaPhoneNumberId,
+        @Field("error_message")
+        String errorMessage,
 
-        @Field("template_id")
-        String templateId,
+        // No. of times retried
+        @Field("retry_count")
+        Integer retryCount,
 
         @Field("dispatched_at")
         Instant dispatchedAt) {

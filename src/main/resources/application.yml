@@ -8,7 +8,7 @@ spring.threads.virtual.enabled: true
 # --- Custom Application Properties ---
 app:
     whatsapp:
-        hit-real-api: false
+        hit-real-api: ${WA_CAMPAIGN_HIT_REAL_API:false}
         api-version: v22.0
         base-url: ${META_WHATSAPP_BASE_URL:https://graph.facebook.com}
         http-client:
@@ -47,7 +47,7 @@ spring.data.redis:
     timeout: 5000ms
 
 # --- MongoDB Configuration ---
-spring.mongodb.uri: ${WA_CAMPAIGN_SERVICE_MONGO_DB_URI:mongodb://localhost:27017/whatsapp_campaign}
+spring.mongodb.uri: ${WA_CAMPAIGN_SERVICE_MONGO_DB_URI:mongodb://localhost:27017/wa_campaigns}
 
 # --- Kafka auto configuration properties ---
 spring:

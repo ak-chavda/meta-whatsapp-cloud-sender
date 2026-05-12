@@ -47,6 +47,14 @@ public class QuotaManager {
     private final StringRedisTemplate redisTemplate;
     private final CircuitBreaker circuitBreaker;
 
+    // check if WaBa account is exhausted along with all its numbers (reset in 24 hrs)
+    public QuotaCheckResult checkDailyQuotaCircuitOpen(String wabaId){
+        if (circuitBreaker.isDailyQuotaCircuitOpen(wabaId)) {
+            return QuotaCheckResult.exhausted(ExhaustionType.WABA_DAILY_QUOTA_EXHAUSTED, "All WABA-phone-numbers exhausted (daily quota) of WABA : " + wabaId);
+        }
+        return null; // WABA is not exhausted, we can proceed with further checks & steps.
+    }
+
     /**
      * Resolves the best available combination of template + WABA + phone number.
      * <p>
@@ -59,25 +67,19 @@ public class QuotaManager {
      */
     public QuotaCheckResult resolveCombination(Campaign campaign) {
 
-        final String campaignId = String.valueOf(campaign.id());
+        final String campaignId = campaign.id().toString();
         final String wabaId = campaign.wabaId();
 
         // ── Resolve Template ───────────────────────────────────────
         TemplateDetail resolvedTemplate = resolveTemplate(wabaId, campaign.templates());
         if (resolvedTemplate == null) {
-            return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE, "All templates exhausted for campaign " + campaignId);
-        }
-
-        // ── Resolve WABA (Daily Quota — 80007) ─────────────────────
-        // check if WaBa account is exhausted along with all its numbers (reset in 24 hrs)
-        if (circuitBreaker.isDailyQuotaCircuitOpen(wabaId)) {
-            return QuotaCheckResult.exhausted(ExhaustionType.WABA, "All WABA phone numbers exhausted (daily quota) for campaign " + campaignId);
+            return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE_DAILY_QUOTA_EXHAUSTED, "All templates exhausted for campaign " + campaignId);
         }
 
         // ── Resolve Phone Number (Burst/MPS — 130429) ──────────────
         WabaNumberDetail resolvedWabaNumber = resolveWabaNumber(wabaId, campaign.wabaNumbers());
         if (resolvedWabaNumber == null) {
-            return QuotaCheckResult.exhausted(ExhaustionType.BURST, "All WABA phone numbers exhausted (burst/MPS) for campaign " + campaignId);
+            return QuotaCheckResult.exhausted(ExhaustionType.WABA_PHONENUMBER_BURST_QUOTA_EXHAUSTED, "All WABA phone numbers exhausted (burst/MPS) for campaign " + campaignId);
         }
 
         return QuotaCheckResult.allowed(resolvedWabaNumber.wabaPhoneNumberId(), resolvedTemplate.templateId());
@@ -87,19 +89,14 @@ public class QuotaManager {
      * Checks weather provided templateId & Waba-phone-number-id is available and
      * circuit is not open.
      */
-    public QuotaCheckResult verifyCombination(OutboundBatchEvent batchEvent, Campaign campaign) {
+    public QuotaCheckResult verifyCombination(String providedWabaPhoneNumberId, String providedTemplateId, Campaign campaign) {
 
         final String campaignId = campaign.id().toString();
         final String wabaId = campaign.wabaId();
 
-        // Check WABA daily quota circuit
-        if (circuitBreaker.isDailyQuotaCircuitOpen(wabaId)) {
-            log.warn("Circuit is OPEN for the provided WABA [{}] in campaign", wabaId);
-            return QuotaCheckResult.exhausted(ExhaustionType.WABA, "Daily quota circuit is open for campaign " + campaignId);
-        }
+        final boolean preserveWabaPhoneNumberId = providedWabaPhoneNumberId != null;
+        final boolean preserveTemplateId = providedTemplateId != null;
 
-        final String providedTemplateId = batchEvent.templateId();
-        final String providedWabaPhoneNumberId = batchEvent.wabaPhoneNumberId();
         String resolvedTemplateId = providedTemplateId;
         String resolvedWabaPhoneNumberId = providedWabaPhoneNumberId;
 
@@ -107,29 +104,29 @@ public class QuotaManager {
         if (providedTemplateId == null) {
             TemplateDetail resolvedTemplate = resolveTemplate(wabaId, campaign.templates());
             if (resolvedTemplate == null) {
-                return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE, "All templates exhausted for campaign " + campaignId);
+                return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE_DAILY_QUOTA_EXHAUSTED, "All templates exhausted for campaign " + campaignId);
             }
             resolvedTemplateId = resolvedTemplate.templateId();
 
         } else if (circuitBreaker.isTemplateCircuitOpen(wabaId, providedTemplateId)) { // Check circuit for the provided-templateId
-            log.warn("Circuit is OPEN for the provided Template [{}] in batchEvent", providedTemplateId);
-            return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE, "Template circuit is open for campaign " + campaignId);
+            log.warn("Circuit is OPEN for the provided Template [{}]", providedTemplateId);
+            return QuotaCheckResult.exhaustedWithPreserve(preserveWabaPhoneNumberId, providedWabaPhoneNumberId, preserveTemplateId, providedTemplateId, ExhaustionType.TEMPLATE_DAILY_QUOTA_EXHAUSTED, "Template circuit is open for campaign " + campaignId);
         }
 
         // Resolve WabaPhoneNumberId
         if (providedWabaPhoneNumberId == null) {
             WabaNumberDetail resolvedWabaNumber = resolveWabaNumber(wabaId, campaign.wabaNumbers());
             if (resolvedWabaNumber == null) {
-                return QuotaCheckResult.exhausted(ExhaustionType.BURST, "All WABA phone numbers exhausted (burst/MPS) for campaign " + campaignId);
+                return QuotaCheckResult.exhausted(ExhaustionType.WABA_PHONENUMBER_BURST_QUOTA_EXHAUSTED, "All WABA phone numbers exhausted (burst/MPS) for campaign " + campaignId);
             }
             resolvedWabaPhoneNumberId = resolvedWabaNumber.wabaPhoneNumberId();
 
         } else if (circuitBreaker.isBurstLimitCircuitOpen(providedWabaPhoneNumberId)) { // Check burst/MPS circuit (130429) for the provided-wabaPhoneNumberId
-            log.warn("Circuit is OPEN for WaBa phone number [{}] in batchEvent", providedWabaPhoneNumberId);
-            return QuotaCheckResult.exhausted(ExhaustionType.BURST, "Burst circuit is open for campaign " + campaignId);
+            log.warn("Circuit is OPEN for WaBa phone number [{}]", providedWabaPhoneNumberId);
+            return QuotaCheckResult.exhaustedWithPreserve(preserveWabaPhoneNumberId, providedWabaPhoneNumberId, preserveTemplateId, providedTemplateId, ExhaustionType.WABA_PHONENUMBER_BURST_QUOTA_EXHAUSTED, "Burst circuit is open for campaign " + campaignId);
         }
 
-        return QuotaCheckResult.allowed(resolvedWabaPhoneNumberId, resolvedTemplateId);
+        return QuotaCheckResult.allowedWithPreserve(preserveWabaPhoneNumberId, resolvedWabaPhoneNumberId, preserveTemplateId, resolvedTemplateId);
     }
 
     /**

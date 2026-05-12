@@ -15,8 +15,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record FailureEvent(
 
-        Integer campaignId,
         Integer batchId,
+        Integer campaignId,
 
         String wabaId,
         String wabaPhoneNumberId,

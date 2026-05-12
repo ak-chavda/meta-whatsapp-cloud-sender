@@ -12,7 +12,19 @@ public record OutboundBatchEvent(
 
         Integer campaignId,
         Integer batchId,
-        String wabaPhoneNumberId, // Nullable, if provided strictly, send message from this Waba. Else rotate Wabas.
+        String wabaPhoneNumberId, // Nullable, if provided strictly, send message from this WABA. Else rotate WABAs.
         String templateId, // Nullable, if provided strictly, send message with this Template. Else rotate Templates.
-        List<String> targetPhoneNumbers) {
+        List<String> targetPhoneNumbers,
+
+        // These preserve fields are computed internally
+        boolean preserveWaBaPhoneNumberId,
+        boolean preserveTemplateId) {
+
+    public boolean preserveWaBaPhoneNumberId() {
+        return this.wabaPhoneNumberId() != null;
+    }
+
+    public boolean preserveTemplateId() {
+        return this.templateId() != null;
+    }
 }

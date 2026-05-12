@@ -17,11 +17,51 @@ public record MessageStatusResultEvent(
 
         Integer batchId,
         Integer campaignId,
+        String wabaId,
+        String wabaPhoneNumberId,
+        String templateId,
         List<String> targetPhoneNumbers,
+
         boolean isSendSuccessful,
+        String whatsappMessageId,
+
         String errorCode,
         String errorMessage,
-        String whatsappMessageId,
+
         int retryCount,
         Instant timestamp) {
+
+    // Create Fail status event
+    public static MessageStatusResultEvent createFailedStatusEvent(OutboundBatchEvent batch, String wabaId, List<String> targetPhoneNumbers, String errorCode, String errorMessage, int retryCount) {
+        return new MessageStatusResultEvent(
+                batch.batchId(),
+                batch.campaignId(),
+                wabaId,
+                batch.preserveWaBaPhoneNumberId() ? batch.wabaPhoneNumberId() : null,
+                batch.preserveTemplateId() ? batch.templateId() : null,
+                targetPhoneNumbers,
+                false,
+                null,
+                errorCode,
+                errorMessage,
+                retryCount,
+                Instant.now());
+    }
+
+    // Create Success status event
+    public static MessageStatusResultEvent createSuccessStatusEvent(OutboundBatchEvent batch, String wabaId, List<String> targetPhoneNumbers, String whatsappMessageId, int retryCount) {
+        return new MessageStatusResultEvent(
+                batch.batchId(),
+                batch.campaignId(),
+                wabaId,
+                batch.preserveWaBaPhoneNumberId() ? batch.wabaPhoneNumberId() : null,
+                batch.preserveTemplateId() ? batch.templateId() : null,
+                targetPhoneNumbers,
+                true,
+                whatsappMessageId,
+                null,
+                null,
+                retryCount,
+                Instant.now());
+    }
 }

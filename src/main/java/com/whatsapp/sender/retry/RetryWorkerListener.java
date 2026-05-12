@@ -18,6 +18,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.whatsapp.sender.dto.Campaign;
 import com.whatsapp.sender.dto.FailureEvent;
 import com.whatsapp.sender.dto.MessageStatusResultEvent;
+import com.whatsapp.sender.dto.QuotaCheckResult;
+import com.whatsapp.sender.dto.Campaign.WabaNumberDetail;
 import com.whatsapp.sender.enums.FailureStatus;
 import com.whatsapp.sender.repository.MessageStateRepository;
 import com.whatsapp.sender.service.CampaignClient;
@@ -147,33 +149,43 @@ public class RetryWorkerListener {
     private void retryTarget(FailureEvent failureEvent, Campaign campaign, String targetPhone, String accessToken, int nextRetryCount) {
 
         final String wabaId = failureEvent.wabaId();
-        final String wabaPhoneNumberId = failureEvent.wabaPhoneNumberId();
-        final String templateId = failureEvent.templateId();
+
+        QuotaCheckResult quotaResult = (failureEvent.wabaPhoneNumberId() == null && failureEvent.templateId() == null)
+                ? quotaManager.resolveCombination(campaign)
+                : quotaManager.verifyCombination(failureEvent.wabaPhoneNumberId(), failureEvent.templateId(), campaign);
+
+        final String wabaPhoneNumberId = quotaResult.wabaPhoneNumberId();
+        final String templateId = quotaResult.templateId();
 
         try {
             WhatsappApiClient.SendResult sendResult = whatsappApiClient.sendMessage(wabaPhoneNumberId, templateId, accessToken, targetPhone, campaign);
 
-            if (sendResult.success()) { // ── Success: QuotaManager handles increment + circuit check ──
+            // ── Success: QuotaManager handles increment + circuit check ──
+            if (sendResult.success()) { 
                 quotaManager.recordSuccessAndCheckLimits(campaign, templateId);
-
                 MessageStatusResultEvent successEvent = new MessageStatusResultEvent(
                         failureEvent.batchId(),
                         failureEvent.campaignId(),
+                        wabaId,
+                        wabaPhoneNumberId,
+                        templateId,
                         List.of(targetPhone),
                         true,
-                        null, null,
                         sendResult.whatsappMessageId(),
+                        null,
+                        null,
                         nextRetryCount,
-                        Instant.now()
-                );
+                        Instant.now());
 
                 messageStateRepository.saveDispatchResult(successEvent, wabaPhoneNumberId, templateId);
                 log.info("Retry succeeded for phone [{}], campaign [{}].", targetPhone, failureEvent.campaignId());
+                return;
+            } 
 
-            } else if (Utils.isRetryable(sendResult)) { // ── Retryable failure: QuotaManager handles circuit opening ──
+            // ── Retryable failure: QuotaManager handles circuit opening ──
+            if(Utils.isRetryable(sendResult)) {
                 final String errorCode = Utils.resolveErrorCode(sendResult);
                 quotaManager.handleRetryableError(errorCode, wabaId, wabaPhoneNumberId);
-
                 metaErrorOutboxService.queueForRetry(
                         failureEvent.campaignId(),
                         failureEvent.batchId(),
@@ -183,26 +195,28 @@ public class RetryWorkerListener {
                         List.of(targetPhone),
                         errorCode,
                         sendResult.errorDetail(),
-                        nextRetryCount
-                );
+                        nextRetryCount);
                 log.warn("Retry failed (retryable) for phone [{}]. Error: {}. Re-queued to outbox.", targetPhone, errorCode);
+                return;
+            } 
 
-            } else { // ── Non-retryable failure: permanent failure ───────────────
-                MessageStatusResultEvent failedEvent = new MessageStatusResultEvent(
-                        failureEvent.batchId(),
-                        failureEvent.campaignId(),
-                        List.of(targetPhone),
-                        false,
-                        sendResult.errorCode(),
-                        sendResult.errorDetail(),
-                        null,
-                        nextRetryCount,
-                        Instant.now()
-                );
-
-                messageStateRepository.saveDispatchResult(failedEvent, wabaPhoneNumberId, templateId);
-                log.error("Retry failed (non-retryable) for phone [{}]. Error: {}. Saved as permanent failure.", targetPhone, sendResult.errorCode());
-            }
+            // ── Non-retryable failure: permanent failure ───────────────
+            MessageStatusResultEvent failedEvent = new MessageStatusResultEvent(
+                    failureEvent.batchId(),
+                    failureEvent.campaignId(),
+                    wabaId,
+                    wabaPhoneNumberId,
+                    templateId,
+                    List.of(targetPhone),
+                    false,
+                    null,
+                    sendResult.errorCode(),
+                    sendResult.errorDetail(),
+                    nextRetryCount,
+                    Instant.now());
+            messageStateRepository.saveDispatchResult(failedEvent, wabaPhoneNumberId, templateId);
+            log.error("Retry failed (non-retryable) for phone [{}]. Error: {}. Saved as permanent failure.", targetPhone, sendResult.errorCode());
+            return;
 
         } catch (Exception e) { // Re-queue to outbox as a safety net
             log.error("!!! Exception retrying phone [{}] for campaign [{}]: {}", targetPhone, failureEvent.campaignId(), e.getMessage());
@@ -215,8 +229,7 @@ public class RetryWorkerListener {
                     List.of(targetPhone),
                     "CLIENT_ERROR",
                     "Exception during retry: " + e.getMessage(),
-                    nextRetryCount
-            );
+                    nextRetryCount);
         }
     }
 
@@ -227,15 +240,16 @@ public class RetryWorkerListener {
         MessageStatusResultEvent terminalFailure = new MessageStatusResultEvent(
                 failureEvent.batchId(),
                 failureEvent.campaignId(),
+                failureEvent.wabaId(),
+                failureEvent.wabaPhoneNumberId(),
+                failureEvent.templateId(),
                 failureEvent.targetPhoneNumbers(),
                 false,
+                null,
                 status.name(),
                 reason + " | Original: " + failureEvent.errorMessage(),
-                null,
                 failureEvent.currentRetryCount(),
-                Instant.now()
-        );
-
+                Instant.now());
         messageStateRepository.saveDispatchResult(terminalFailure, failureEvent.wabaPhoneNumberId(), failureEvent.templateId());
     }
 }

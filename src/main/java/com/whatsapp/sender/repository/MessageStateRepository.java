@@ -34,23 +34,22 @@ public class MessageStateRepository {
      * Asynchronously persists a message dispatch result to MongoDB.
      * <p>
      * Runs on a virtual thread to avoid blocking the batch dispatcher.
-     *
-     * @param event             the status result event containing dispatch outcome
-     * @param wabaPhoneNumberId the WaBa phone number ID used for this dispatch
      */
     public void saveDispatchResult(MessageStatusResultEvent event, String wabaPhoneNumberId, String templateId) {
         virtualThreadExecutor.submit(() -> {
             try {
-                MessageDispatchDocument document = new MessageDispatchDocument(
+                MessageDispatchDocument document = new MessageDispatchDocument (
                         UUID.randomUUID().toString(),
                         event.campaignId(),
                         event.batchId(),
+                        wabaPhoneNumberId,
+                        templateId,
                         event.targetPhoneNumbers(),
                         event.whatsappMessageId(),
                         event.isSendSuccessful(),
                         event.errorCode(),
-                        wabaPhoneNumberId,
-                        templateId,
+                        event.errorMessage(),
+                        event.retryCount(),
                         Instant.now()
                 );
 
