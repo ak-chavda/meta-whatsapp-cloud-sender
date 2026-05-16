@@ -50,7 +50,7 @@ public class OutboundBatchListener {
 
         OutboundBatchEvent batch;
         try {
-            log.debug("Campaign batch payload :: {}", payload);
+            log.info("Campaign batch payload :: {}", payload);
             batch = objectMapper.readValue(payload, OutboundBatchEvent.class);
 
         } catch (Exception e) {
@@ -63,19 +63,12 @@ public class OutboundBatchListener {
         final Integer batchId = batch.batchId();
         final Integer campaignId = batch.campaignId();
         final int targetCount = batch.targetPhoneNumbers().size();
-        log.debug("Received batch [{}] for campaign [{}], TargetsCount: {}", batchId, campaignId, targetCount);
+        log.info("Received batch [{}] for campaign [{}], TargetsCount: {}", batchId, campaignId, targetCount);
 
         try {
             // ── Pre-flight Kill Switch ──────────────────────────────
             if (killSwitchService.shouldDiscardBatch(campaignId)) {
                 log.error("!!! Batch [{}] discarded by kill switch. Campaign [{}] is paused/cancelled.", batchId, campaignId);
-                acknowledgment.acknowledge();
-                return;
-            }
-
-            // ── Validate batch payload ──────────────────────────────
-            if (batch.targetPhoneNumbers() == null || batch.targetPhoneNumbers().isEmpty()) {
-                log.error("!!! Batch [{}] for campaign [{}] has no targets. Acknowledging and skipping.", batchId, campaignId);
                 acknowledgment.acknowledge();
                 return;
             }

@@ -6,36 +6,31 @@ import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.whatsapp.sender.dao.MessageDispatchDocument;
 import com.whatsapp.sender.dto.Campaign;
-import com.whatsapp.sender.dto.FailureEvent;
-import com.whatsapp.sender.dto.MessageStatusResultEvent;
-import com.whatsapp.sender.dto.QuotaCheckResult;
-import com.whatsapp.sender.dto.Campaign.WabaNumberDetail;
+import com.whatsapp.sender.dto.OutboundBatchEvent;
 import com.whatsapp.sender.enums.FailureStatus;
-import com.whatsapp.sender.repository.MessageStateRepository;
-import com.whatsapp.sender.service.CampaignClient;
+import com.whatsapp.sender.repository.MessageDispatchRepository;
+import com.whatsapp.sender.service.BatchDispatcher;
 import com.whatsapp.sender.service.CampaignService;
+import com.whatsapp.sender.service.MessageStateService;
 import com.whatsapp.sender.service.QuotaManager;
 import com.whatsapp.sender.service.WhatsappApiClient;
-import com.whatsapp.sender.util.Utils;
 
 /**
  * Retry Worker -- Kafka consumer for the rretryable events kafka topic.
- * Consumes retryable failure events that were pushed by the {@link MetaErrorSchedulers}
+ * Consumes retryable failure events that were pushed by the {@link RetrySchedulers}
  * from the MongoDB outbox after their retry-after time elapsed.
  * <p>
  * Processing flow:
  * <ol>
- *   <li><strong>Deserialize</strong> the {@link FailureEvent} from the retry topic.</li>
+ *   <li><strong>Deserialize</strong> the {@link retryEvent} from the retry topic.</li>
  *   <li><strong>Check retry count</strong>: If max retries exhausted → save to {@code message_dispatch_log} as permanent failure + DLQ.</li>
  *   <li><strong>Fetch access token</strong> from the external Campaign Service.</li>
  *   <li><strong>Re-execute the WhatsApp API call</strong> for each target phone number using Virtual Threads.</li>
@@ -56,15 +51,11 @@ public class RetryWorkerListener {
 // directly pick from DB and process it and then save it and delete it from retry table entry.
 // REUSE THE EXISTING CODE FOR DISPACH SERVICE AND ALL. Do not write custom-logic to send again....
 
+    private final BatchDispatcher batchDispatcher;
     private final ObjectMapper objectMapper;
-    private final WhatsappApiClient whatsappApiClient;
     private final CampaignService campaignService;
-    private final CampaignClient campaignClient;
-    private final QuotaManager quotaManager;
-    private final MetaErrorOutboxService metaErrorOutboxService;
-    private final MessageStateRepository messageStateRepository;
-    private final DlqService dlqService;
-    private final ExecutorService virtualThreadExecutor;
+    private final MessageStateService messageStateService;
+    private final MessageDispatchRepository messageDispatchRepository;
 
     @Value("${app.retry.max-attempts}")
     private int maxRetries;
@@ -75,181 +66,50 @@ public class RetryWorkerListener {
     @KafkaListener(topics = "${app.kafka.topics.campaign-failures-retry}", groupId = "${spring.kafka.consumer.group-id}-retry-worker")
     public void onRetryReceived(@Payload String payload, Acknowledgment acknowledgment) {
 
-        FailureEvent failureEvent;
+        OutboundBatchEvent retryEvent;
         try {
-            failureEvent = objectMapper.readValue(payload, FailureEvent.class);
+            log.info("Retry worker payload :: {}", payload);
+            retryEvent = objectMapper.readValue(payload, OutboundBatchEvent.class);
         } catch (Exception e) {
             log.error("!!! Failed to deserialize retry event. Acknowledging and skipping. Error: {}", e.getMessage());
+            e.printStackTrace();
             acknowledgment.acknowledge();
             return;
         }
 
-        log.info("Processing retry for campaign [{}], batch [{}], {} targets. Error: {} | Retry: {}/{}",
-                failureEvent.campaignId(), failureEvent.batchId(),
-                failureEvent.targetPhoneNumbers().size(),
-                failureEvent.errorCode(),
-                failureEvent.currentRetryCount(), maxRetries);
-
         try {
-            // ── Check max retries exhausted ────────────────────────────────
-            if (failureEvent.currentRetryCount() >= maxRetries) {
-                log.warn("!!! Max retries ({}) exhausted for campaign [{}], batch [{}]. Routing to DLQ.", maxRetries, failureEvent.campaignId(), failureEvent.batchId());
-                saveAsPermanentFailure(failureEvent, FailureStatus.MAX_RETRIES_EXHAUSTED, "Max retries exhausted (" + maxRetries + ")");
-                dlqService.routeToDlq(failureEvent, "Max retries exhausted (" + maxRetries + ")");
-                acknowledgment.acknowledge();
-                return;
-            }
-
             // ── Resolve campaign details ───────────────────────────────────
-            Campaign campaign = campaignService.getCampaignDetail(failureEvent.campaignId());
+            Campaign campaign = campaignService.getCampaignDetail(retryEvent.campaignId());
             if (campaign == null) {
-                log.error("Campaign detail retrieval failed for campaign [{}] during retry. Routing to DLQ.", failureEvent.campaignId());
-                saveAsPermanentFailure(failureEvent, FailureStatus.CAMPAIGN_DETAIL_RETRIEVAL_FAILED, "Campaign details not found during retry");
-                dlqService.routeToDlq(failureEvent, "Campaign details not found during retry");
+                log.error("Campaign detail retrieval failed for campaign [{}] during retry. Routing to DLQ.", retryEvent.campaignId());
+                messageStateService.updateBatchFailures(retryEvent, null, null, FailureStatus.CAMPAIGN_DETAIL_RETRIEVAL_FAILED.name(), "Campaign details not found during retry");
                 acknowledgment.acknowledge();
                 return;
             }
 
-            // ── Fetch access token ─────────────────────────────────────────
-            final String wabaPhoneNumberId = failureEvent.wabaPhoneNumberId();
-            final String accessToken = campaignClient.fetchTokenForWhatsappAccount(wabaPhoneNumberId);
-            if (accessToken == null || accessToken.isEmpty()) {
-                log.error("Access token retrieval failed for WaBa [{}] during retry. Routing to DLQ.", wabaPhoneNumberId);
-                saveAsPermanentFailure(failureEvent, FailureStatus.ACCESS_TOKEN_RETRIEVAL_FAILED, "Access token not found for WaBa during retry: " + wabaPhoneNumberId);
-                dlqService.routeToDlq(failureEvent, "Access token retrieval failed during retry");
+            // ── Check max retries exhausted ────────────────────────────────
+            final int maxRetriesBasedOnCampaignBid = maxRetries * campaign.bid();
+            List<MessageDispatchDocument> retryExhausted = messageDispatchRepository.findByCampaignIdAndMobileInAndAttemptsGreaterThan(retryEvent.campaignId(), retryEvent.targetPhoneNumbers(), maxRetriesBasedOnCampaignBid);
+            if (retryExhausted.size() == retryEvent.targetPhoneNumbers().size()) {
+                log.warn("!!! Max retries [{}] exhausted for campaign [{}], batch [{}], targetPhoneNumbers [{}].", maxRetries, retryEvent.campaignId(), retryEvent.batchId());
+                messageStateService.updateBatchFailures(retryEvent, null, null, FailureStatus.MAX_RETRIES_EXHAUSTED.name(), "Max retries exhausted (" + maxRetries + ")");
                 acknowledgment.acknowledge();
-                return;
+
+            } else {
+                List<MessageDispatchDocument> retryNotExhausted = messageDispatchRepository.findByCampaignIdAndMobileInAndAttemptsLessThanEqual(retryEvent.campaignId(), retryEvent.targetPhoneNumbers(), maxRetries);
+                // Extract all the phonennumbrs and call the same dispatch service for sending message (with all the params)
+                List<String> targetPhoneNumbers = retryNotExhausted.stream().map(MessageDispatchDocument::getMobile).toList();
+                retryEvent = new OutboundBatchEvent(retryEvent.campaignId(), retryEvent.batchId(), targetPhoneNumbers);
+
+                // ── Fan-out HTTP calls via Virtual Threads ──────────────
+                batchDispatcher.dispatchRetryBatch(retryEvent, campaign);
+
+                acknowledgment.acknowledge();
             }
-
-            // ── Fan-out via Virtual Threads ────────────────────────────────
-            // Use the same wabaPhoneNumerId & templateId as it is in failureEvent for retry request 
-            final int nextRetryCount = failureEvent.currentRetryCount() + 1;
-            List<CompletableFuture<Void>> futures = failureEvent.targetPhoneNumbers().stream()
-                    .map(targetPhone -> CompletableFuture.runAsync(() ->
-                            retryTarget(failureEvent, campaign, targetPhone, accessToken, nextRetryCount), virtualThreadExecutor))
-                    .toList();
-
-            // Barrier: wait for all retries to complete
-            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
-
-            acknowledgment.acknowledge();
-
-            log.info("Retry batch completed for campaign [{}], batch [{}], {} targets.", failureEvent.campaignId(), failureEvent.batchId(), failureEvent.targetPhoneNumbers().size());
 
         } catch (Exception e) {
-            log.error("Unhandled exception during retry for campaign [{}], batch [{}]: {}. NOT acknowledging to kafka.", failureEvent.campaignId(), failureEvent.batchId(), e.getMessage());
+            log.error("!!! Failed to process retry event. Acknowledging and skipping. Error: {}", e.getMessage());
+            acknowledgment.acknowledge();
         }
-    }
-
-    /**
-     * Retries a single target phone number. Re-executes the HTTP call and routes the result.
-     * <p>
-     * All quota/circuit operations delegated to {@link QuotaManager}.
-     */
-    private void retryTarget(FailureEvent failureEvent, Campaign campaign, String targetPhone, String accessToken, int nextRetryCount) {
-
-        final String wabaId = failureEvent.wabaId();
-
-        QuotaCheckResult quotaResult = (failureEvent.wabaPhoneNumberId() == null && failureEvent.templateId() == null)
-                ? quotaManager.resolveCombination(campaign)
-                : quotaManager.verifyCombination(failureEvent.wabaPhoneNumberId(), failureEvent.templateId(), campaign);
-
-        final String wabaPhoneNumberId = quotaResult.wabaPhoneNumberId();
-        final String templateId = quotaResult.templateId();
-
-        try {
-            WhatsappApiClient.SendResult sendResult = whatsappApiClient.sendMessage(wabaPhoneNumberId, templateId, accessToken, targetPhone, campaign);
-
-            // ── Success: QuotaManager handles increment + circuit check ──
-            if (sendResult.success()) { 
-                quotaManager.recordSuccessAndCheckLimits(campaign, templateId);
-                MessageStatusResultEvent successEvent = new MessageStatusResultEvent(
-                        failureEvent.batchId(),
-                        failureEvent.campaignId(),
-                        wabaId,
-                        wabaPhoneNumberId,
-                        templateId,
-                        List.of(targetPhone),
-                        true,
-                        sendResult.whatsappMessageId(),
-                        null,
-                        null,
-                        nextRetryCount,
-                        Instant.now());
-
-                messageStateRepository.saveDispatchResult(successEvent, wabaPhoneNumberId, templateId);
-                log.info("Retry succeeded for phone [{}], campaign [{}].", targetPhone, failureEvent.campaignId());
-                return;
-            } 
-
-            // ── Retryable failure: QuotaManager handles circuit opening ──
-            if(Utils.isRetryable(sendResult)) {
-                final String errorCode = Utils.resolveErrorCode(sendResult);
-                quotaManager.handleRetryableError(errorCode, wabaId, wabaPhoneNumberId);
-                metaErrorOutboxService.queueForRetry(
-                        failureEvent.campaignId(),
-                        failureEvent.batchId(),
-                        wabaId,
-                        wabaPhoneNumberId,
-                        templateId,
-                        List.of(targetPhone),
-                        errorCode,
-                        sendResult.errorDetail(),
-                        nextRetryCount);
-                log.warn("Retry failed (retryable) for phone [{}]. Error: {}. Re-queued to outbox.", targetPhone, errorCode);
-                return;
-            } 
-
-            // ── Non-retryable failure: permanent failure ───────────────
-            MessageStatusResultEvent failedEvent = new MessageStatusResultEvent(
-                    failureEvent.batchId(),
-                    failureEvent.campaignId(),
-                    wabaId,
-                    wabaPhoneNumberId,
-                    templateId,
-                    List.of(targetPhone),
-                    false,
-                    null,
-                    sendResult.errorCode(),
-                    sendResult.errorDetail(),
-                    nextRetryCount,
-                    Instant.now());
-            messageStateRepository.saveDispatchResult(failedEvent, wabaPhoneNumberId, templateId);
-            log.error("Retry failed (non-retryable) for phone [{}]. Error: {}. Saved as permanent failure.", targetPhone, sendResult.errorCode());
-            return;
-
-        } catch (Exception e) { // Re-queue to outbox as a safety net
-            log.error("!!! Exception retrying phone [{}] for campaign [{}]: {}", targetPhone, failureEvent.campaignId(), e.getMessage());
-            metaErrorOutboxService.queueForRetry(
-                    failureEvent.campaignId(),
-                    failureEvent.batchId(),
-                    wabaId,
-                    wabaPhoneNumberId,
-                    templateId,
-                    List.of(targetPhone),
-                    "CLIENT_ERROR",
-                    "Exception during retry: " + e.getMessage(),
-                    nextRetryCount);
-        }
-    }
-
-    /**
-     * Saves a failure event as a permanent failure to MessageDispatchDocument.
-     */
-    private void saveAsPermanentFailure(FailureEvent failureEvent, FailureStatus status, String reason) {
-        MessageStatusResultEvent terminalFailure = new MessageStatusResultEvent(
-                failureEvent.batchId(),
-                failureEvent.campaignId(),
-                failureEvent.wabaId(),
-                failureEvent.wabaPhoneNumberId(),
-                failureEvent.templateId(),
-                failureEvent.targetPhoneNumbers(),
-                false,
-                null,
-                status.name(),
-                reason + " | Original: " + failureEvent.errorMessage(),
-                failureEvent.currentRetryCount(),
-                Instant.now());
-        messageStateRepository.saveDispatchResult(terminalFailure, failureEvent.wabaPhoneNumberId(), failureEvent.templateId());
     }
 }

@@ -5,15 +5,15 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
 import java.util.List;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.whatsapp.sender.dao.MetaErrorOutboxDocument;
-import com.whatsapp.sender.dto.FailureEvent;
+import com.whatsapp.sender.dao.MessageDispatchDocument;
+import com.whatsapp.sender.dto.OutboundBatchEvent;
+import com.whatsapp.sender.service.MessageStateService;
 
 /**
  * Scheduled tasks for the Database Polling / Transactional Outbox Pattern.
@@ -30,13 +30,13 @@ import com.whatsapp.sender.dto.FailureEvent;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class MetaErrorSchedulers {
+public class RetrySchedulers {
 
     ////////////////////////////////////////////////////////////
     // This file is looks fine only 
     // I am thinking to use the scheduler only not to push to kafka for retry topic instead directly pick from DB and process it and then save it and delete it from retry table entry.
 
-    private final MetaErrorOutboxService outboxService;
+    private final MessageStateService messageStateService;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
 
@@ -81,8 +81,8 @@ public class MetaErrorSchedulers {
      */
     private void processRipeMessages(String errorCodePattern, boolean is5xx) {
         try {
-            // Fetch & Lock (Atomic)
-            List<MetaErrorOutboxDocument> ripeMessages = outboxService.fetchAndLockRipeMessages(errorCodePattern, is5xx, pollLimit);
+            // Fetch & Lock Ripe entries (Atomic)
+            List<MessageDispatchDocument> ripeMessages = messageStateService.fetchAndLockRipeMessages(errorCodePattern, is5xx, pollLimit);
             if (ripeMessages == null || ripeMessages.isEmpty()) {
                 log.info("Found 0 ripe messages for error pattern [{}]", errorCodePattern);
                 return;
@@ -90,38 +90,28 @@ public class MetaErrorSchedulers {
 
             // Process each locked document
             log.info("Found {} ripe messages for error pattern [{}]", ripeMessages.size(), errorCodePattern);
-            for (MetaErrorOutboxDocument doc : ripeMessages) {
-                FailureEvent failureEvent = new FailureEvent(
-                    doc.campaignId(),
-                    doc.batchId(),
-                    doc.wabaId(),
-                    doc.wabaPhoneNumberId(),
-                    doc.templateId(),
-                    doc.targetPhoneNumbers(),
-                    doc.errorCode(),
-                    doc.errorMessage(),
-                    doc.retryCount(),
-                    Instant.now()
-                );
+            for (MessageDispatchDocument ripeMessage : ripeMessages) {
+
+                // TODO :: Fetch the mobile numbers and Group them by error-code --> create single event containing all the mobile numbers.
+                // So, it will be routed once instead of multiple times.
+                OutboundBatchEvent retryEvent = new OutboundBatchEvent(ripeMessage.getCampaignId(), ripeMessage.getBatchId(), List.of(ripeMessage.getMobile()));
 
                 try {
-                    String payload = objectMapper.writeValueAsString(failureEvent);
+                    String payload = objectMapper.writeValueAsString(retryEvent);
 
-                    // Push payload to retry-topic, then delete from outbox
-                    kafkaTemplate.send(retryTopic, String.valueOf(doc.campaignId()), payload)
-                            .whenComplete((result, ex) -> {
-                                if (ex != null) {
-                                    log.error("Failed to push doc [{}] to retry topic: {}", doc.id(), ex.getMessage());
-                                    // don't delete from outbox, let the scheduler retry
+                    // Push payload to retry-topic
+                    kafkaTemplate.send(retryTopic, ripeMessage.getCampaignId().toString(), payload)
+                            .whenComplete((result, e) -> {
+                                if (e == null) {
+                                    log.debug("Successfully pushed retry-event [{}] to retry-topic.", payload);
+
                                 } else {
-                                    log.debug("Successfully pushed doc [{}] to retry topic. Deleting from outbox.", doc.id());
-                                    outboxService.deleteFromOutbox(doc);
+                                    log.error("Failed to push retry-event [{}] to retry-topic: {}", payload, e.getMessage());
                                 }
                             });
 
                 } catch (Exception e) {
-                    log.error("Error pushing outbox doc [{}] to Kafka: {}", doc.id(), e.getMessage(), e);
-                    // don't delete from outbox, let the scheduler retry
+                    log.error("Error pushing outbox doc [{}] to Kafka: {}", ripeMessage.getId(), e.getMessage(), e);
                 }
             }
 

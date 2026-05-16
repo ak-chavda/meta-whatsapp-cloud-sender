@@ -60,7 +60,6 @@ public class QuotaManager {
      * <p>
      * Follows the user-defined sequence:
      * <ol>
-     *   <li>Template check → rotate → all exhausted?</li>
      *   <li>Daily quota (80007) check → rotate → all exhausted?</li>
      *   <li>Burst/MPS (130429) check → rotate → all hit?</li>
      * </ol>
@@ -83,50 +82,6 @@ public class QuotaManager {
         }
 
         return QuotaCheckResult.allowed(resolvedWabaNumber.wabaPhoneNumberId(), resolvedTemplate.templateId());
-    }
-
-    /**
-     * Checks weather provided templateId & Waba-phone-number-id is available and
-     * circuit is not open.
-     */
-    public QuotaCheckResult verifyCombination(String providedWabaPhoneNumberId, String providedTemplateId, Campaign campaign) {
-
-        final String campaignId = campaign.id().toString();
-        final String wabaId = campaign.wabaId();
-
-        final boolean preserveWabaPhoneNumberId = providedWabaPhoneNumberId != null;
-        final boolean preserveTemplateId = providedTemplateId != null;
-
-        String resolvedTemplateId = providedTemplateId;
-        String resolvedWabaPhoneNumberId = providedWabaPhoneNumberId;
-
-        // Resolve Template
-        if (providedTemplateId == null) {
-            TemplateDetail resolvedTemplate = resolveTemplate(wabaId, campaign.templates());
-            if (resolvedTemplate == null) {
-                return QuotaCheckResult.exhausted(ExhaustionType.TEMPLATE_DAILY_QUOTA_EXHAUSTED, "All templates exhausted for campaign " + campaignId);
-            }
-            resolvedTemplateId = resolvedTemplate.templateId();
-
-        } else if (circuitBreaker.isTemplateCircuitOpen(wabaId, providedTemplateId)) { // Check circuit for the provided-templateId
-            log.warn("Circuit is OPEN for the provided Template [{}]", providedTemplateId);
-            return QuotaCheckResult.exhaustedWithPreserve(preserveWabaPhoneNumberId, providedWabaPhoneNumberId, preserveTemplateId, providedTemplateId, ExhaustionType.TEMPLATE_DAILY_QUOTA_EXHAUSTED, "Template circuit is open for campaign " + campaignId);
-        }
-
-        // Resolve WabaPhoneNumberId
-        if (providedWabaPhoneNumberId == null) {
-            WabaNumberDetail resolvedWabaNumber = resolveWabaNumber(wabaId, campaign.wabaNumbers());
-            if (resolvedWabaNumber == null) {
-                return QuotaCheckResult.exhausted(ExhaustionType.WABA_PHONENUMBER_BURST_QUOTA_EXHAUSTED, "All WABA phone numbers exhausted (burst/MPS) for campaign " + campaignId);
-            }
-            resolvedWabaPhoneNumberId = resolvedWabaNumber.wabaPhoneNumberId();
-
-        } else if (circuitBreaker.isBurstLimitCircuitOpen(providedWabaPhoneNumberId)) { // Check burst/MPS circuit (130429) for the provided-wabaPhoneNumberId
-            log.warn("Circuit is OPEN for WaBa phone number [{}]", providedWabaPhoneNumberId);
-            return QuotaCheckResult.exhaustedWithPreserve(preserveWabaPhoneNumberId, providedWabaPhoneNumberId, preserveTemplateId, providedTemplateId, ExhaustionType.WABA_PHONENUMBER_BURST_QUOTA_EXHAUSTED, "Burst circuit is open for campaign " + campaignId);
-        }
-
-        return QuotaCheckResult.allowedWithPreserve(preserveWabaPhoneNumberId, resolvedWabaPhoneNumberId, preserveTemplateId, resolvedTemplateId);
     }
 
     /**

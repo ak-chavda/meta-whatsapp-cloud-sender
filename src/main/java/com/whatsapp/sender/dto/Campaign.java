@@ -2,11 +2,14 @@ package com.whatsapp.sender.dto;
 
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record Campaign(
         Integer id,
         String name,
+        int bid,
         @JsonProperty("waba_id") String wabaId,
         @JsonProperty("waba_numbers") List<WabaNumberDetail> wabaNumbers,
         @JsonProperty("templates") List<TemplateDetail> templates) {

@@ -27,7 +27,7 @@ app:
     retry:
         # This is the retry attempts for each failed numbers
         # TODO : This can even be expanded to failure type wise retry attempts
-        max-attempts: 10
+        max-attempts: 3
     campaign:
         details:
             # TTL for cached campaign details in Redis (in minutes)

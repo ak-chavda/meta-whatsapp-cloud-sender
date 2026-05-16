@@ -2,7 +2,6 @@ package com.whatsapp.sender.service;
 
 import org.springframework.stereotype.Service;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -11,14 +10,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import com.whatsapp.sender.dto.Campaign;
-import com.whatsapp.sender.dto.FailureEvent;
-import com.whatsapp.sender.dto.MessageStatusResultEvent;
 import com.whatsapp.sender.dto.OutboundBatchEvent;
 import com.whatsapp.sender.dto.QuotaCheckResult;
 import com.whatsapp.sender.enums.FailureStatus;
-import com.whatsapp.sender.repository.MessageStateRepository;
-import com.whatsapp.sender.retry.DlqService;
-import com.whatsapp.sender.retry.MetaErrorOutboxService;
 import com.whatsapp.sender.util.Utils;
 
 /**
@@ -49,9 +43,7 @@ public class BatchDispatcher {
     private final CampaignService campaignService;
     private final CampaignClient campaignClient;
     private final QuotaManager quotaManager;
-    private final MessageStateRepository messageStateRepository;
-    private final MetaErrorOutboxService metaErrorOutboxService;
-    private final DlqService dlqService;
+    private final MessageStateService messageStateService;
     private final ExecutorService virtualThreadExecutor;
 
     /**
@@ -70,32 +62,19 @@ public class BatchDispatcher {
         Campaign campaign = campaignService.getCampaignDetail(campaignId);
         if (campaign == null) {
             log.error("Campaign detail retrieval failed for campaign [{}]. Marking all {} targets as FAILED.", campaignId, targetPhoneNumbers.size());
-            handleBatchLevelFailure(batchEvent, null, FailureStatus.CAMPAIGN_DETAIL_RETRIEVAL_FAILED.name(), "Campaign details not found");
-            return;
-        }
-
-        if (campaign.templates() == null || campaign.templates().isEmpty()) {
-            log.error("No template configured for campaign [{}]. Marking all targets as FAILED.", campaignId);
-            handleBatchLevelFailure(batchEvent, campaign.wabaId(), FailureStatus.NO_TEMPLATE_CONFIGURED.name(), "No template found in campaign configuration");
-            return;
-        }
-
-        if (campaign.wabaNumbers() == null || campaign.wabaNumbers().isEmpty()) {
-            log.error("No WaBa phone number configured for campaign [{}]. Marking all targets as FAILED.", campaignId);
-            handleBatchLevelFailure(batchEvent, campaign.wabaId(), FailureStatus.NO_WABA_CONFIGURED.name(), "No WaBa phone number found in campaign configuration");
+            messageStateService.insertBatchFailures(batchEvent, null, null, FailureStatus.CAMPAIGN_DETAIL_RETRIEVAL_FAILED.name(), "Campaign details not found");
             return;
         }
 
         QuotaCheckResult quotaResult = quotaManager.checkDailyQuotaCircuitOpen(campaign.wabaId());
         if (quotaResult != null) {
             log.warn("WABA account daily quota exhausted. Skipping further processing for batch. | campaignId: {}, batchId: {}, exhaustionType: {}, exhaustionReason: {}", campaignId, batchId, quotaResult.exhaustionType(), quotaResult.reason());
-            MessageStatusResultEvent failedEvent = MessageStatusResultEvent.createFailedStatusEvent(batchEvent, campaign.wabaId(), targetPhoneNumbers, quotaResult.exhaustionType().name(), quotaResult.reason(), 0);
-            messageStateRepository.saveDispatchResult(failedEvent, null, null);
+            messageStateService.insertBatchFailures(batchEvent, quotaResult.wabaPhoneNumberId(), quotaResult.templateId(), quotaResult.exhaustionType().name(), quotaResult.reason());
             return; // No need to go further as main WABA is exhausted
         }
 
         // ── Fan-out via Virtual Threads ────────────────────────────
-        List<CompletableFuture<MessageStatusResultEvent>> futures = targetPhoneNumbers.stream()
+        List<CompletableFuture<Boolean>> futures = targetPhoneNumbers.stream()
                 .map(targetPhoneNumber -> CompletableFuture.supplyAsync(
                         () -> processTarget(batchEvent, targetPhoneNumber, campaign), virtualThreadExecutor))
                 .toList();
@@ -110,11 +89,51 @@ public class BatchDispatcher {
         }
 
         // Collect results for logging
-        List<MessageStatusResultEvent> results = futures.stream().map(CompletableFuture::join).toList();
-        long successCount = results.stream().filter(MessageStatusResultEvent::isSendSuccessful).count();
+        List<Boolean> results = futures.stream().map(CompletableFuture::join).toList();
+        long successCount = results.stream().filter(Boolean::booleanValue).count();
         long failedCount = results.size() - successCount;
 
         log.info("===> Batch [{}] completed. Campaign: [{}], Sent: {}, Failed: {}, Total: {}", batchId, campaignId, successCount, failedCount, results.size());
+    }
+
+    /**
+     * Processes all target phone numbers in a retry-batch concurrently using Virtual
+     * Threads.
+     */
+    public void dispatchRetryBatch(OutboundBatchEvent batchEvent, Campaign campaign) {
+
+        final Integer campaignId = batchEvent.campaignId();
+        final Integer batchId = batchEvent.batchId();
+        List<String> targetPhoneNumbers = batchEvent.targetPhoneNumbers();
+
+        QuotaCheckResult quotaResult = quotaManager.checkDailyQuotaCircuitOpen(campaign.wabaId());
+        if (quotaResult != null) {
+            log.warn("WABA account daily quota exhausted. Skipping further processing for retry-batch. | campaignId: {}, batchId: {}, exhaustionType: {}, exhaustionReason: {}", campaignId, batchId, quotaResult.exhaustionType(), quotaResult.reason());
+            messageStateService.updateBatchFailures(batchEvent, quotaResult.wabaPhoneNumberId(), quotaResult.templateId(), quotaResult.exhaustionType().name(), quotaResult.reason());
+            return; // No need to go further as main WABA is exhausted
+        }
+
+        // ── Fan-out via Virtual Threads ────────────────────────────
+        List<CompletableFuture<Boolean>> futures = targetPhoneNumbers.stream()
+                .map(targetPhoneNumber -> CompletableFuture.supplyAsync(
+                        () -> processTarget(batchEvent, targetPhoneNumber, campaign), virtualThreadExecutor))
+                .toList();
+
+        // Barrier: wait for ALL HTTP calls to complete
+        CompletableFuture<Void> allCompleted = CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new));
+
+        try {
+            allCompleted.join();
+        } catch (Exception e) {
+            log.error("===> Unexpected error waiting for retry-batch [{}] completion: {}", batchId, e.getMessage(), e);
+        }
+
+        // Collect results for logging
+        List<Boolean> results = futures.stream().map(CompletableFuture::join).toList();
+        long successCount = results.stream().filter(Boolean::booleanValue).count();
+        long failedCount = results.size() - successCount;
+
+        log.info("===> Retry-batch [{}] completed. Campaign: [{}], Sent: {}, Failed: {}, Total: {}", batchId, campaignId, successCount, failedCount, results.size());
     }
 
     /**
@@ -125,18 +144,15 @@ public class BatchDispatcher {
      * All quota incrementing and circuit breaker operations are delegated to
      * {@link QuotaManager} -- this class does NOT directly call {@link CircuitBreaker}.
      */
-    private MessageStatusResultEvent processTarget(OutboundBatchEvent batchEvent, String targetPhoneNumber, Campaign campaign) {
+    private boolean processTarget(OutboundBatchEvent batchEvent, String targetPhoneNumber, Campaign campaign) {
 
-        QuotaCheckResult quotaResult = (batchEvent.wabaPhoneNumberId() == null && batchEvent.templateId() == null)
-                ? quotaManager.resolveCombination(campaign)
-                : quotaManager.verifyCombination(batchEvent.wabaPhoneNumberId(), batchEvent.templateId(), campaign);
+        QuotaCheckResult quotaResult = quotaManager.resolveCombination(campaign);
 
         // If NOT allowed
         if (!quotaResult.allowed()) {
             log.warn("Quota exhausted. Type: {}, Reason: {}", quotaResult.exhaustionType(), quotaResult.reason());
-            MessageStatusResultEvent failedEvent = MessageStatusResultEvent.createFailedStatusEvent(batchEvent, campaign.wabaId(), List.of(targetPhoneNumber), quotaResult.exhaustionType().name(), quotaResult.reason(), 0);
-            messageStateRepository.saveDispatchResult(failedEvent, null, null);
-            return failedEvent;
+            messageStateService.updateFailureForMobile(batchEvent.campaignId(), batchEvent.batchId(), targetPhoneNumber, null, null, quotaResult.exhaustionType().name(), quotaResult.reason());
+            return false;
         }
 
         final String resolvedWabaPhoneNumberId = quotaResult.wabaPhoneNumberId();
@@ -146,9 +162,8 @@ public class BatchDispatcher {
         String accessToken = campaignClient.fetchTokenForWhatsappAccount(resolvedWabaPhoneNumberId);
         if (accessToken == null || accessToken.isEmpty()) {
             log.error("Access token retrieval failed for WaBa [{}]. Saving as permanent failure.", resolvedWabaPhoneNumberId);
-            MessageStatusResultEvent failedEvent = MessageStatusResultEvent.createFailedStatusEvent(batchEvent, campaign.wabaId(), List.of(targetPhoneNumber), FailureStatus.ACCESS_TOKEN_RETRIEVAL_FAILED.name(), "Access token not found for WaBa: " + resolvedWabaPhoneNumberId, 0);
-            messageStateRepository.saveDispatchResult(failedEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
-            return failedEvent;
+            messageStateService.updateFailureForMobile(batchEvent.campaignId(), batchEvent.batchId(), targetPhoneNumber, resolvedWabaPhoneNumberId, resolvedTemplateId, FailureStatus.ACCESS_TOKEN_RETRIEVAL_FAILED.name(), "Access token not found");
+            return false;
         }
 
         // ── Execute HTTP Call ──────────────────────────────────────────────
@@ -158,9 +173,8 @@ public class BatchDispatcher {
         if (sendResult.success()) {
             // QuotaManager handles ALL: increment counters + check limits + open circuits
             quotaManager.recordSuccessAndCheckLimits(campaign, resolvedTemplateId);
-            MessageStatusResultEvent successEvent = MessageStatusResultEvent.createSuccessStatusEvent(batchEvent, campaign.wabaId(), List.of(targetPhoneNumber), sendResult.whatsappMessageId(), 0);
-            messageStateRepository.saveDispatchResult(successEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
-            return successEvent;
+            messageStateService.updateSuccessForMobile(batchEvent.campaignId(), batchEvent.batchId(), targetPhoneNumber, resolvedWabaPhoneNumberId, resolvedTemplateId, sendResult.whatsappMessageId());
+            return true;
         }
 
         // ── Handle Retryable Errors (130429, 80007, 429, 5xx) → Outbox ────
@@ -169,48 +183,13 @@ public class BatchDispatcher {
 
             // QuotaManager handles circuit breaker opening
             quotaManager.handleRetryableError(errorCode, campaign.wabaId(), resolvedWabaPhoneNumberId);
-
-            // Queue to MetaErrorOutbox for scheduled retry
-            metaErrorOutboxService.queueForRetry(
-                    batchEvent.campaignId(),
-                    batchEvent.batchId(),
-                    campaign.wabaId(),
-                    resolvedWabaPhoneNumberId,
-                    resolvedTemplateId,
-                    List.of(targetPhoneNumber),
-                    errorCode,
-                    sendResult.errorDetail(),
-                    0 // first attempt
-            );
-            return MessageStatusResultEvent.createFailedStatusEvent(batchEvent, campaign.wabaId(), List.of(targetPhoneNumber), errorCode, sendResult.errorDetail(), 0);
+            messageStateService.updateRetryableFailureForMobile(batchEvent.campaignId(), batchEvent.batchId(), targetPhoneNumber, resolvedWabaPhoneNumberId, resolvedTemplateId, errorCode, sendResult.errorDetail());
+            return true; 
         }
 
-        // ── Handle Non-Retryable Errors (4xx, etc.) → Permanent Failure + DLQ ──
-        MessageStatusResultEvent failedEvent = MessageStatusResultEvent.createFailedStatusEvent(batchEvent, campaign.wabaId(), List.of(targetPhoneNumber), sendResult.errorCode(), sendResult.errorDetail(), 0);
-        messageStateRepository.saveDispatchResult(failedEvent, resolvedWabaPhoneNumberId, resolvedTemplateId);
+        // ── Handle Non-Retryable Errors (4xx, etc.) → Permanent Failure ──
+        messageStateService.updateFailureForMobile(batchEvent.campaignId(), batchEvent.batchId(), targetPhoneNumber, resolvedWabaPhoneNumberId, resolvedTemplateId, sendResult.errorCode(), sendResult.errorDetail());
 
-        // Route to DLQ for non-retryable errors
-        FailureEvent dlqEvent = new FailureEvent(
-                batchEvent.campaignId(),
-                batchEvent.batchId(),
-                campaign.wabaId(),
-                resolvedWabaPhoneNumberId,
-                resolvedTemplateId,
-                List.of(targetPhoneNumber),
-                sendResult.errorCode(),
-                sendResult.errorDetail(),
-                0,
-                Instant.now());
-        dlqService.routeToDlq(dlqEvent, "Non-retryable error: " + sendResult.errorCode());
-
-        return failedEvent;
-    }
-
-    /**
-     * Handles batch-level failures (e.g., campaign detail retrieval failure).
-     */
-    private void handleBatchLevelFailure(OutboundBatchEvent batch, String wabaId, String errorCode, String errorMessage) {
-        MessageStatusResultEvent failedEvent = MessageStatusResultEvent.createFailedStatusEvent(batch, wabaId, batch.targetPhoneNumbers(), errorCode, errorMessage, 0);
-        messageStateRepository.saveDispatchResult(failedEvent, null, null);
+        return false;
     }
 }
